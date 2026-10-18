@@ -42,7 +42,13 @@ const ALLOWED = [
   ['GET', /^\/api\/contests\/[\w-]+\/entry$/],
   ['POST', /^\/api\/contests\/[\w-]+\/enter$/, ['partner']],
   ['POST', /^\/api\/contests\/[\w-]+\/join\/[\w-]+$/, []],
+  // 0.2.3: asking a friend after entering on your own, and taking it back; friend requests.
+  ['POST', /^\/api\/contests\/[\w-]+\/invite$/, ['partner']],
+  ['DELETE', /^\/api\/contests\/[\w-]+\/invite$/],
   ['GET', /^\/api\/friends$/],
+  ['GET', /^\/api\/friends\/requests$/],
+  ['POST', /^\/api\/friends$/, ['username']],
+  ['POST', /^\/api\/friends\/requests\/[\w-]+\/accept$/, []],
   ['POST', /^\/api\/timer\/windows$/, ['contestId']],
   ['GET', /^\/api\/timer\/windows\/[\w-]+$/],
   ['POST', /^\/api\/timer\/windows\/[\w-]+\/beat$/, ['seq', 'nonce', 'segments', 'signature', 'record']],
@@ -148,7 +154,9 @@ async function startDemoDatabase() {
   if (!existsSync(entry)) throw new Error(`no Demo Database server at ${entry}: set RELUDUALI_SERVER_REPO`);
   const data = mkdtempSync(join(tmpdir(), 'reluduali-lumit-check-'));
   const port = await freePort();
-  const child = spawn(process.execPath, [entry], { env: { ...process.env, PORT: String(port), DEMODB_DATA: data }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // DEMODB_TRUST_PROXY: each pretend person signs up from an address of their own (account() below), since the
+  // server lets five accounts a hour come from one, and this run makes more. The panel's own requests carry none.
+  const child = spawn(process.execPath, [entry], { env: { ...process.env, PORT: String(port), DEMODB_DATA: data, DEMODB_TRUST_PROXY: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   child.stdout.on('data', (d) => { log += d; });
   child.stderr.on('data', (d) => { log += d; });
@@ -161,9 +169,11 @@ async function startDemoDatabase() {
   throw new Error('the Demo Database server never came up\n' + log);
 }
 
+let accounts = 0;
 async function account(base, username) {
   const password = 'test-password-' + username;
-  const r = await fetch(base + '/api/auth/signup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) });
+  accounts++;
+  const r = await fetch(base + '/api/auth/signup', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.9.0.' + accounts }, body: JSON.stringify({ username, password }) });
   if (!r.ok) throw new Error(`could not make ${username}: ${await r.text()}`);
   const cookie = r.headers.get('set-cookie').split(';')[0];
   const user = await r.json();
@@ -476,7 +486,7 @@ const text = (sel) => page.eval(`(document.querySelector(${JSON.stringify(sel)})
 /** Another project open in Lumit, or this one saved: what project.info answers from now on, and the event. */
 const projectIs = async (p) => { lumit.project = p; await lumit.emit('project.changed', p); };
 
-let organizer, alice, bob, contest;
+let organizer, alice, bob, dave, contest;
 
 try {
   organizer = await account(db.base, 'organizer');
@@ -802,6 +812,100 @@ try {
     expect(await page.eval(`document.getElementById('clockcard').classList.contains('timed')`), 'the clock card is not marked timed');
     for (let i = 0; i < 30 && !/left in the contest/.test(lumit.status || ''); i++) await sleep(100);
     expect(/^0:59:5\d left in the contest · /.test(lumit.status || ''), `the bottom strip says ${JSON.stringify(lumit.status)}`);
+  });
+
+  // 2026-10-18, the organizer: "I couldnt join my partner after I had started so I essentially had to make a entirely new
+  // Reluduali account and then make sure friend was added on the website before I logged into the panel."
+  await step("entered on your own, a friend's invitation still shows; joining says what it does, asks once more, and the time used joins the team's", async () => {
+    const cup = (await organizer.call('/api/contests', 'POST', { ...RULES, name: 'Join cup' })).data;
+    expect(cup && cup.id, 'the organizer could not make Join cup');
+    dave = await account(db.base, 'dave');
+    await dave.call('/api/friends', 'POST', { username: 'alice' });
+    await alice.call(`/api/friends/requests/${dave.user.id}/accept`, 'POST');
+    await page.eval(`document.querySelector('.nav[data-go="contest"]').click()`);
+    await page.waitFor(`[...document.querySelectorAll('#ct-list li')].some((li) => li.textContent.includes('Join cup'))`, 5000, 'Join cup in the list');
+    await page.eval(`[...document.querySelectorAll('#ct-list li')].find((li) => li.textContent.includes('Join cup')).querySelector('button').click()`);
+    await page.waitFor(`/On my own/.test(document.getElementById('ct-enter-body').textContent)`, 10000, 'the choice of how to enter');
+    await page.clickText('#ct-enter-body button', 'Enter');
+    await page.waitFor(`/Open my window/.test(document.getElementById('ct-enter-body').textContent)`, 10000, 'entered alone');
+    await page.clickText('#ct-enter-body button', 'Open my window');
+    await page.waitFor(`document.getElementById('app').dataset.screen === 'overview'`, 10000, 'the timer');
+    await lumit.emit('activity.focus', { focused: true });
+    for (let i = 0; i < 8; i++) { await lumit.emit('activity.edit', { step: 'Cut', at: Date.now() }); await sleep(400); }
+    await sleep(2500);
+    const alone = (await alice.call(`/api/contests/${cup.id}/entry`)).data;
+    expect(alone.members.length === 1 && alone.chargedMs > 0, `alone: ${alone.members.length} member(s), ${alone.chargedMs} ms charged`);
+    // Dave asks her now. Before 0.2.3 she never saw it, and the server would not have let her say yes.
+    const asked = await dave.call(`/api/contests/${cup.id}/enter`, 'POST', { partner: 'alice' });
+    expect(asked.status === 200, 'dave could not ask alice, who had entered alone: ' + JSON.stringify(asked.data));
+    await page.eval(`document.querySelector('.nav[data-go="contest"]').click()`);
+    await page.waitFor(`/dave invited you to edit this contest together\\. You entered on your own/.test(document.getElementById('ct-enter-body').textContent)`, 10000, "dave's invitation, though alice has entered");
+    const offer = await text('#ct-enter-body');
+    expect(/The \d:\d\d:\d\d of contest time you have used so far joins the team's/.test(offer), offer);
+    expect(/Your window closes and opens again at once/.test(offer), offer);
+    await page.shot('12-join-offer');
+    const before = (await alice.call(`/api/contests/${cup.id}/entry`)).data.chargedMs;
+    await page.clickText('#ct-enter-body button', 'Join dave');
+    await page.waitFor(`[...document.querySelectorAll('#ct-enter-body button')].some((b) => b.textContent === 'Yes, join dave')`, 5000, 'the second press');
+    expect((await alice.call(`/api/contests/${cup.id}/entry`)).data.members.length === 1, 'it joined on the first press');
+    await page.clickText('#ct-enter-body button', 'Yes, join dave');
+    await page.waitFor(`/Joined\\. The \\d:\\d\\d:\\d\\d you had used joins the team's time/.test(document.getElementById('ct-enter-body').textContent)`, 10000, 'what joined, in words');
+    const team = (await dave.call(`/api/contests/${cup.id}/entry`)).data;
+    expect(JSON.stringify(team.members.map((m) => [m.username, m.accepted])) === '[["dave",true],["alice",true]]', 'the team is ' + JSON.stringify(team.members.map((m) => [m.username, m.accepted])));
+    expect(team.chargedMs >= before && team.workedBy.editing >= alone.workedBy.editing, `the team has ${team.chargedMs} ms, alice had ${before}`);
+    expect((await organizer.call('/api/contests')).data.find((c) => c.id === cup.id).entries === 1, 'two entries, not one');
+    await page.shot('13-joined');
+    // Her window opened again, on the team's entry: its check-ins charge the team.
+    for (let i = 0; i < 8; i++) { await lumit.emit('activity.edit', { step: 'Cut', at: Date.now() }); await sleep(400); }
+    await sleep(2500);
+    const after = (await dave.call(`/api/contests/${cup.id}/entry`)).data;
+    expect(after.chargedMs > team.chargedMs, `the team's time stayed at ${team.chargedMs} ms`);
+  });
+
+  await step('a friend request from the Partner page, said yes to on reluduali.com, shows without signing out; one sent to you is accepted there', async () => {
+    const erin = await account(db.base, 'erin');
+    const fay = await account(db.base, 'fay');
+    await page.eval(`document.querySelector('.nav[data-go="partner"]').click()`);
+    await page.type('#pt-add-name', 'erin');
+    await page.click('#pt-add-go');
+    await page.waitFor(`/Friend request sent to erin/.test(document.getElementById('pt-add-note').textContent)`, 10000, 'the request sent');
+    expect(/erin\s*asked · waiting/.test(await text('#pt-requests')), await text('#pt-requests'));
+    expect((await erin.call('/api/friends/requests')).data.incoming.some((u) => u.username === 'alice'), 'erin has no request from alice');
+    expect((await erin.call(`/api/friends/requests/${alice.user.id}/accept`, 'POST')).status === 200, 'erin could not say yes');
+    // Opening the Partner page again reads the lists again: no signing out.
+    const reopen = async () => {
+      await page.eval(`document.querySelector('.nav[data-go="overview"]').click()`);
+      await sleep(200);
+      await page.eval(`document.querySelector('.nav[data-go="partner"]').click()`);
+    };
+    await reopen();
+    await page.waitFor(`[...document.querySelectorAll('#pt-friends li')].some((li) => li.textContent.includes('erin'))`, 5000, 'erin among the friends');
+    await fay.call('/api/friends', 'POST', { username: 'alice' });
+    await reopen();
+    await page.waitFor(`/fay\\s*wants to be your Reluduali friend/.test(document.getElementById('pt-requests').textContent)`, 5000, "fay's request");
+    await page.shot('14-partner-requests');
+    await page.clickText('#pt-requests button', 'Accept');
+    await page.waitFor(`[...document.querySelectorAll('#pt-friends li')].some((li) => li.textContent.includes('fay'))`, 5000, 'fay among the friends');
+    expect((await fay.call('/api/friends')).data.some((u) => u.username === 'alice'), 'fay and alice are not friends on the server');
+    expect(/You and fay are friends now/.test(await text('#pt-add-note')), await text('#pt-add-note'));
+  });
+
+  await step('a friend asked from the Partner page after entering on your own, and the invitation taken back', async () => {
+    const cup = (await organizer.call('/api/contests', 'POST', { ...RULES, name: 'Ask cup' })).data;
+    expect((await alice.call(`/api/contests/${cup.id}/enter`, 'POST', {})).status === 200, 'alice could not enter Ask cup');
+    await page.eval(`document.querySelector('.nav[data-go="contest"]').click()`);
+    await page.waitFor(`[...document.querySelectorAll('#ct-list li')].some((li) => li.textContent.includes('Ask cup'))`, 5000, 'Ask cup in the list');
+    await page.eval(`[...document.querySelectorAll('#ct-list li')].find((li) => li.textContent.includes('Ask cup')).querySelector('button').click()`);
+    await page.waitFor(`/Open my window/.test(document.getElementById('ct-enter-body').textContent)`, 10000, 'Ask cup chosen, entered');
+    await page.eval(`document.querySelector('.nav[data-go="partner"]').click()`);
+    await page.waitFor(`/You entered on your own\\. You can still ask a friend/.test(document.getElementById('pt-note').textContent)`, 5000, 'the offer to ask');
+    await page.eval(`[...document.querySelectorAll('#pt-friends li')].find((li) => li.textContent.includes('erin')).querySelector('button').click()`);
+    await page.waitFor(`/You asked erin/.test(document.getElementById('pt-share-status').textContent)`, 5000, 'erin asked');
+    const asked = await alice.call(`/api/contests/${cup.id}/entry`);
+    expect(JSON.stringify(asked.data.members.map((m) => [m.username, m.accepted])) === '[["alice",true],["erin",false]]', JSON.stringify(asked.data.members));
+    await page.clickText('#pt-actions button', 'Take back the invitation');
+    await page.waitFor(`/You entered on your own\\. You can still ask a friend/.test(document.getElementById('pt-note').textContent)`, 5000, 'taken back');
+    expect((await alice.call(`/api/contests/${cup.id}/entry`)).data.members.length === 1, 'the invitation is still on the server');
   });
 
   await step('everything the panel sent is on the list, to reluduali.com only, with a bearer token and no cookie', async () => {

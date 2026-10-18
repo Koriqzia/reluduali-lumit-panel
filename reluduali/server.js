@@ -66,8 +66,18 @@
     entry: (token, contestId) => send('GET', `/api/contests/${id(contestId)}/entry`, undefined, token),
     enter: (token, contestId, partner) => send('POST', `/api/contests/${id(contestId)}/enter`, partner ? { partner } : {}, token),
     invitations: (token) => send('GET', '/api/contests/invitations', undefined, token),
+    // Saying yes to a friend's invitation. If you had entered on your own, your entry joins theirs: the time you
+    // used counts in your one shared budget, and your must-use demos go back for their full price.
     acceptInvitation: (token, contestId, entryId) => send('POST', `/api/contests/${id(contestId)}/join/${id(entryId)}`, {}, token),
+    // Asking a friend to be your partner after you entered on your own, by name; and taking that back.
+    invite: (token, contestId, partner) => send('POST', `/api/contests/${id(contestId)}/invite`, { partner }, token),
+    takeBackInvitation: (token, contestId) => send('DELETE', `/api/contests/${id(contestId)}/invite`, undefined, token),
+
+    // Your friends, and friend requests: a request to the name you type, and saying yes to one sent to you.
     friends: (token) => send('GET', '/api/friends', undefined, token),
+    friendRequests: (token) => send('GET', '/api/friends/requests', undefined, token),
+    askFriend: (token, username) => send('POST', '/api/friends', { username }, token),
+    acceptFriend: (token, userId) => send('POST', `/api/friends/requests/${id(userId)}/accept`, {}, token),
 
     // Your window: opening it, the check-in about once a minute, and each
     // render as it happens. A check-in carries only how long each category

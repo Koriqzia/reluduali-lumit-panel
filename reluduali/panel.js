@@ -13,7 +13,7 @@
   // page can change it (lumit/check.mjs does, to run in seconds): Lumit
   // loads it as plain index.html.
   const BEAT_MS = Math.max(1000, Number(new URLSearchParams(location.search).get('beat')) || 60000);
-  const VERSION = '0.1.0';
+  const VERSION = '0.2.3';
   const KEY = {
     token: 'reluduali.token',
     contest: 'reluduali.contest',
@@ -40,6 +40,9 @@
     info: null,
     token: null, user: null,
     contests: [], contestId: null, contest: null, entry: null, invitations: [], friends: [], submission: null,
+    requests: { incoming: [], outgoing: [] }, // friend requests: sent to you, and sent by you
+    joinArmed: null, joined: null, // an invitation pressed once, waiting for the second press; what the last join brought
+    friendNote: null,                // what the last friend request did, in words
     win: null, ledger: null, contestProject: null, reopened: false, closedElsewhere: false,
     witnessed: [], lastBeatOk: null, lastBeatTry: 0, offlineSince: null, beating: false, beatTimer: null,
     records: [], record: null, recordCheck: null, // the edit record: every window's steps, this window's chain, the server's check
@@ -140,6 +143,7 @@
   // ---------------------------------------------------------------------------
 
   function go(screen) {
+    if (screen !== S.screen) { S.friendNote = null; S.joinArmed = null; } // a word about the last press, until you go elsewhere
     S.screen = screen;
     app.dataset.screen = screen;
     for (const s of document.querySelectorAll('.screen')) s.hidden = s.id !== 's-' + screen;
@@ -187,6 +191,13 @@
       $('signin-go').disabled = false;
     }
   });
+  // A friend request from the Partner page (0.2.3): to the name typed, and only that.
+  $('pt-add').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const name = $('pt-add-name').value.trim();
+    if (!name) return say('pt-error', 'Type your friend\'s Reluduali username.');
+    askFriend(name);
+  });
   $('signin-make').addEventListener('click', () => {
     window.lumit.call('app.openExternal', { url: 'https://reluduali.com/login' }).catch(() => {});
   });
@@ -206,7 +217,7 @@
     stopWindow();
     store.del(KEY.token);
     store.del(KEY.window);
-    Object.assign(S, { token: null, user: null, contest: null, entry: null, submission: null, invitations: [], friends: [], signOutArmed: false });
+    Object.assign(S, { token: null, user: null, contest: null, entry: null, submission: null, invitations: [], friends: [], requests: { incoming: [], outgoing: [] }, joinArmed: null, joined: null, signOutArmed: false });
     $('ac-signout').textContent = 'Sign out';
     go('signin');
     say('signin-error', reason || '');
@@ -224,14 +235,16 @@
 
   async function afterSignIn() {
     S.whenDone = store.get(KEY.whenDone) === 'just' ? 'just' : 'replace';
-    const [contests, friends, invitations] = await Promise.all([
+    const [contests, friends, invitations, requests] = await Promise.all([
       guarded(() => RelServer.contests(S.token)),
       guarded(() => RelServer.friends(S.token)).catch(() => []),
       guarded(() => RelServer.invitations(S.token)).catch(() => []),
+      guarded(() => RelServer.friendRequests(S.token)).catch(() => null),
     ]);
     S.contests = contests || [];
     S.friends = friends || [];
     S.invitations = invitations || [];
+    S.requests = requests || { incoming: [], outgoing: [] };
     const remembered = store.get(KEY.contest);
     if (remembered && S.contests.some((c) => c.id === remembered)) await chooseContest(remembered, { quiet: true });
     // A window that was open when this panel last closed is opened again: the
@@ -279,7 +292,7 @@
   }
 
   /**
-   * What reluduali.com says now: contests, friends, invitations and your entry. Read at sign-in, and again whenever
+   * What reluduali.com says now: contests, friends, friend requests, invitations and your entry. Read at sign-in, and again whenever
    * the Contest or Partner screen opens, every minute while one of them shows, and on Refresh. (2026-10-17: a partner
    * who had signed in before the invitation was sent never saw it, and a contest made after signing in never showed.)
    */
@@ -289,14 +302,16 @@
     if (reading) return reading;
     reading = (async () => {
       try {
-        const [contests, friends, invitations] = await Promise.all([
+        const [contests, friends, invitations, requests] = await Promise.all([
           guarded(() => RelServer.contests(S.token)),
           guarded(() => RelServer.friends(S.token)).catch(() => S.friends),
           guarded(() => RelServer.invitations(S.token)).catch(() => S.invitations),
+          guarded(() => RelServer.friendRequests(S.token)).catch(() => S.requests),
         ]);
         S.contests = contests || S.contests;
         S.friends = friends || [];
         S.invitations = invitations || [];
+        S.requests = requests || { incoming: [], outgoing: [] };
         // An open window keeps the rules it opened with; otherwise the contest is as the server has it now.
         if (S.contestId && !S.win) S.contest = S.contests.find((c) => c.id === S.contestId) || S.contest;
         if (S.contestId) await refreshEntry();
@@ -335,15 +350,78 @@
     render();
   }
 
+  /**
+   * Saying yes to a friend's invitation. Entered on your own already, your entry joins theirs (0.2.3; before it, someone
+   * who had entered could not join a partner at all): reluduali.com moves your time into the team's and ends your
+   * window, so the time counted since the last check-in is sent first, and a window open here opens again, on the
+   * team's entry.
+   */
   async function accept(invitation) {
     say('ct-error', '');
+    S.joinArmed = null;
+    const hadWindow = !!S.win && S.contestId === invitation.contestId;
     try {
-      S.entry = await guarded(() => RelServer.acceptInvitation(S.token, invitation.contestId, invitation.entryId));
+      // The last check-in for this entry, and none while the entry moves: it would land in a window that has ended.
+      if (hadWindow) { await beat(); clearTimeout(S.beatTimer); }
+      const r = await guarded(() => RelServer.acceptInvitation(S.token, invitation.contestId, invitation.entryId)).catch((e) => { if (hadWindow) scheduleBeat(); throw e; });
       S.invitations = S.invitations.filter((i) => i !== invitation);
+      const { joined, ...entry } = r;
+      S.entry = entry;
+      S.joined = joined ? { contestId: invitation.contestId, words: joined.words } : null;
+      if (joined) notice('joined-' + invitation.entryId, `You joined ${invitation.from ? invitation.from.username : 'your partner'}'s entry`);
+      if (hadWindow) {
+        const carry = S.ledger;
+        try { await openWindow({ carry }); } catch (e) { stopWindow(); say('ct-error', `Your window could not open again: ${e.message}. Open it on this page.`); }
+      }
     } catch (e) {
-      say('ct-error', e.message);
+      say('ct-error', e.offline ? 'reluduali.com could not be reached.' : e.message);
     }
     render();
+  }
+
+  /** Asking a friend to be your partner after entering on your own; and taking it back before they answer. */
+  async function invite(username) {
+    say('pt-error', '');
+    try {
+      S.entry = await guarded(() => RelServer.invite(S.token, S.contestId, username));
+    } catch (e) {
+      say('pt-error', e.offline ? 'reluduali.com could not be reached.' : e.message);
+    }
+    render();
+  }
+  async function takeBack() {
+    say('pt-error', '');
+    try {
+      S.entry = await guarded(() => RelServer.takeBackInvitation(S.token, S.contestId));
+    } catch (e) {
+      say('pt-error', e.offline ? 'reluduali.com could not be reached.' : e.message);
+    }
+    render();
+  }
+
+  /** A friend request to the name typed, and saying yes to one sent to you. Then the lists are read again. */
+  async function askFriend(username) {
+    say('pt-error', '');
+    S.friendNote = null;
+    try {
+      const r = await guarded(() => RelServer.askFriend(S.token, username));
+      const name = r.user ? r.user.username : username;
+      S.friendNote = r.status === 'friends' ? `You and ${name} are friends now.` : `Friend request sent to ${name}. You are friends once they say yes, on reluduali.com or in their panel.`;
+      $('pt-add-name').value = '';
+    } catch (e) {
+      say('pt-error', e.offline ? 'reluduali.com could not be reached.' : e.message);
+    }
+    await readLists();
+  }
+  async function acceptFriend(person) {
+    say('pt-error', '');
+    try {
+      await guarded(() => RelServer.acceptFriend(S.token, person.id));
+      S.friendNote = `You and ${person.username} are friends now.`;
+    } catch (e) {
+      say('pt-error', e.offline ? 'reluduali.com could not be reached.' : e.message);
+    }
+    await readLists();
   }
 
   // ---------------------------------------------------------------------------
@@ -1166,13 +1244,17 @@
       : 'This contest does not list Lumit (lumit.exe) among its programs, so this panel cannot time it. Use the Reluduali Timer for it.';
 
     const body = clear($('ct-enter-body'));
+    if (S.joined && S.joined.contestId === c.id) body.append(el('p', 'note ok', S.joined.words));
     const invitation = S.invitations.find((i) => i.contestId === c.id);
+    const who = invitation && invitation.from ? invitation.from.username : 'A friend';
     if (!S.entry && invitation) {
-      body.append(el('p', '', `${invitation.from ? invitation.from.username : 'A friend'} invited you to edit this contest together, on one shared budget.`),
-        el('div', 'row'));
-      body.lastChild.append(button('Accept', 'btn pri', () => accept(invitation)));
+      body.append(el('p', '', `${who} invited you to edit this contest together, on one shared budget.`));
+      if (invitation.refusal) body.append(el('p', 'note', `It can't be accepted now: ${invitation.refusal}.`));
+      else { body.append(el('div', 'row')); body.lastChild.append(button('Accept', 'btn pri', () => accept(invitation))); }
       return;
     }
+    // Entered on your own, and a friend asks: you can still join them (2026-10-18).
+    if (S.entry && invitation) body.append(joinOffer(invitation, who));
     if (!S.entry) {
       const choice = el('div', 'choice');
       const alone = el('button', 'opt');
@@ -1191,7 +1273,7 @@
       };
       const opt = (b, t, d) => { const ring = el('span', 'ring'); const txt = el('span'); txt.append(el('span', 'opt-t', t), el('span', 'opt-d', d)); b.append(ring, txt); };
       opt(alone, 'On my own', `${span(c.budgetMinutes * 60000)}, yours alone`);
-      opt(withFriend, 'With a friend', S.friends.length ? 'One shared budget. They must accept.' : 'You have no Reluduali friends yet. Add them on reluduali.com.');
+      opt(withFriend, 'With a friend', S.friends.length ? 'One shared budget. They must accept.' : 'You have no Reluduali friends yet. Add them on the Partner page, or on reluduali.com.');
       alone.addEventListener('click', () => { mode = 'alone'; paint(); });
       withFriend.addEventListener('click', () => { if (S.friends.length) { mode = 'friend'; paint(); } });
       choice.append(alone, withFriend);
@@ -1223,17 +1305,50 @@
       : 'Open your contest project in Lumit and save it once first: edits count only in the project that is open when your window opens. You can\'t pause the window, but idle time is free.'));
   }
 
+  /**
+   * An invitation for someone who has entered on their own: what joining does, in plain words, then a second press
+   * to say yes. What it says of your time and demos is reluduali.com's own count (`joining`), read with the list.
+   */
+  function joinOffer(inv, who) {
+    const box = el('div', 'offer');
+    box.append(el('p', '', `${who} invited you to edit this contest together. You entered on your own, and you can still join them.`));
+    if (inv.refusal) { box.append(el('p', 'note', `You can't join now: ${inv.refusal}.`)); return box; }
+    const j = inv.joining || { timeMs: 0, demos: 0, price: 0, butterBack: 0 };
+    const lines = el('ul');
+    lines.append(el('li', '', j.timeMs
+      ? `The ${clock(j.timeMs)} of contest time you have used so far joins the team's. From then on you share one budget.`
+      : 'You have used none of your contest time yet. From then on you share one budget.'));
+    if (j.demos) {
+      lines.append(el('li', '', `Your ${j.demos === 1 ? 'must-use demo comes' : `${j.demos} must-use demos come`} back for their full price${j.butterBack ? `, and the ${j.butterBack} Butter you paid comes back to you` : ''}. The team chooses its demos together, from one budget.`));
+    }
+    if (S.win) lines.append(el('li', '', 'Your window closes and opens again at once, on the team\'s entry. Nothing you counted is lost.'));
+    lines.append(el('li', '', `Once you join, you and ${who} are one entry for this contest.`));
+    const row = el('div', 'row');
+    if (S.joinArmed === inv.entryId) {
+      row.append(button(`Yes, join ${who}`, 'btn pri', () => accept(inv)), button('Not now', 'btn', () => { S.joinArmed = null; render(); }));
+    } else {
+      row.append(button(`Join ${who}`, 'btn pri', () => { S.joinArmed = inv.entryId; render(); }));
+    }
+    box.append(lines, row);
+    return box;
+  }
+
   function renderPartner() {
     const e = S.entry;
     const p = partnerOf(e);
     $('pt-initial').textContent = p ? p.username[0].toUpperCase() : '?';
     $('pt-names').textContent = p ? `You and ${p.username}` : e ? 'Just you' : 'Not entered yet';
+    const canAsk = !!(e && !p && !deadlinePassed());
     $('pt-note').textContent = !e ? 'Choose a partner when you enter, on the Contest page.'
-      : !p ? 'You entered on your own. A partner can only be chosen when entering.'
+      : !p ? (canAsk ? 'You entered on your own. You can still ask a friend, below: if they say yes, you share one budget.' : 'You entered on your own.')
       : p.accepted ? (p.seenAt ? 'accepted · their window is open' : 'accepted') : 'invited · waiting for them to accept';
     const status = $('pt-share-status');
     const actions = clear($('pt-actions'));
     status.textContent = '';
+    if (p && !p.accepted) {
+      status.textContent = `You asked ${p.username}. Until they say yes, you can take it back and ask someone else.`;
+      actions.append(button('Take back the invitation', 'btn', takeBack));
+    }
     if (teamReady()) {
       const waiting = e.share && e.share.setBy !== S.user.id ? e.share : null;
       const people = (S.share.people || []).map((x) => x.name + (x.me ? ' (you)' : '')).join(', ');
@@ -1268,10 +1383,29 @@
     for (const f of S.friends) {
       const li = el('li');
       li.append(el('span', 'av', f.username[0].toUpperCase()), el('span', 'what', f.username));
-      if (p && p.id === f.id) li.append(el('span', 'sub ok', 'partner'));
+      if (p && p.id === f.id) li.append(el('span', 'sub ok', p.accepted ? 'partner' : 'invited'));
+      else if (canAsk) li.append(button('Ask to edit together', 'btn', () => invite(f.username)));
       friends.append(li);
     }
-    if (!S.friends.length) friends.append(el('li', 'dim', 'No Reluduali friends yet.'));
+    if (!S.friends.length) friends.append(el('li', 'dim', 'No Reluduali friends yet. Send a request below, or on reluduali.com.'));
+    // Friend requests: the ones sent to you, to say yes to here; the ones you sent, waiting.
+    const requests = clear($('pt-requests'));
+    for (const r of S.requests.incoming || []) {
+      const li = el('li');
+      const what = el('span', 'what');
+      what.append(el('span', '', r.username), el('span', 'note', 'wants to be your Reluduali friend'));
+      li.append(el('span', 'av', r.username[0].toUpperCase()), what, button('Accept', 'btn pri', () => acceptFriend(r)));
+      requests.append(li);
+    }
+    for (const r of S.requests.outgoing || []) {
+      const li = el('li');
+      const what = el('span', 'what');
+      what.append(el('span', '', r.username), el('span', 'note', 'asked · waiting for them to say yes'));
+      li.append(el('span', 'av', r.username[0].toUpperCase()), what);
+      requests.append(li);
+    }
+    requests.hidden = !requests.firstChild;
+    say('pt-add-note', S.friendNote || '');
   }
 
   function renderRecord() {

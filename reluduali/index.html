@@ -198,7 +198,14 @@
       <div class="card span2">
         <span class="h">Your friends</span>
         <ul class="list" id="pt-friends"></ul>
-        <p class="note">Only Reluduali friends can edit with you. You choose your partner when you enter a contest. Add friends on reluduali.com.</p>
+        <ul class="list" id="pt-requests" hidden></ul>
+        <form class="row" id="pt-add" autocomplete="off">
+          <label class="vh" for="pt-add-name">A friend's Reluduali username</label>
+          <input class="in grow add-name" id="pt-add-name" type="text" maxlength="32" spellcheck="false" placeholder="A friend's Reluduali username">
+          <button class="btn" type="submit" id="pt-add-go">Send a friend request</button>
+        </form>
+        <p class="note ok" id="pt-add-note" hidden></p>
+        <p class="note">Only Reluduali friends can edit with you. Ask one when you enter a contest, or here after you entered on your own. A friend request goes to the name you type; you are friends once they say yes.</p>
       </div>
     </div>
   </section>

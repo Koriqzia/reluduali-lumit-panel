@@ -1,6 +1,6 @@
 # The Reluduali panel for Lumit
 
-**The Reluduali contest clock, as a panel inside Lumit. Version 0.2.2.**
+**The Reluduali contest clock, as a panel inside Lumit. Version 0.2.3.**
 
 Reluduali runs editing contests. Each entrant gets the same amount of editing
 time. This panel is the clock that keeps that time. It sits inside Lumit, the
@@ -93,11 +93,15 @@ from. That is how the internet works, and no program can avoid it.
 |---|---|---|
 | You press **Sign in** | `POST /api/auth/token` | your Reluduali name and password, once. A token comes back. **The password is not kept anywhere** |
 | The panel opens and you are already signed in | `GET /api/auth/me` | nothing but the token. It asks "is this sign-in still good?" |
-| You sign in; the *Contest* or *Partner* page opens; every minute while one of them shows; you press **Refresh**; you enter a contest | `GET /api/contests`, `GET /api/friends`, `GET /api/contests/invitations` | nothing but the token. Contests' rules are public. Your friends and your invitations are yours alone |
+| You sign in; the *Contest* or *Partner* page opens; every minute while one of them shows; you press **Refresh**; you enter a contest | `GET /api/contests`, `GET /api/friends`, `GET /api/friends/requests`, `GET /api/contests/invitations` | nothing but the token. Contests' rules are public. Your friends, your friend requests and your invitations are yours alone |
 | You choose a contest; the lists above are read again; you share your project or unlink the Console; every 5 minutes while your window is open | `GET /api/contests/<contest>/entry`, `GET /api/contests/<contest>/submission` | nothing but the token. It asks for **your** entry and **your** hand-in |
 | Every 3 seconds while a Console code is waiting (10 minutes at most) | `GET /api/contests/<contest>/entry` | nothing but the token. It asks whether the Console has used the code |
 | You press **Enter** | `POST /api/contests/<contest>/enter` | the friend you chose as your partner, by name. Nothing if you enter alone |
-| You accept a partner's invitation | `POST /api/contests/<contest>/join/<entry>` | nothing but the token |
+| You accept a partner's invitation | `POST /api/contests/<contest>/join/<entry>` | nothing but the token. If you had entered on your own, your entry joins theirs: the time you used counts in your one shared budget, and your must-use demos go back for their full price. The panel says this and asks you once more before it sends anything |
+| You entered on your own, and press **Ask to edit together** next to a friend | `POST /api/contests/<contest>/invite` | that friend's Reluduali name |
+| You press **Take back the invitation**, before they answer | `DELETE /api/contests/<contest>/invite` | nothing but the token |
+| You press **Send a friend request** | `POST /api/friends` | the Reluduali name you typed |
+| You press **Accept** on a friend request someone sent you | `POST /api/friends/requests/<person>/accept` | nothing but the token |
 | You press **Open my window**, or Lumit restarts while your window was open | `POST /api/timer/windows` | which contest |
 | **About once a minute, while your window is open** | `POST /api/timer/windows/<window>/beat` | how long each kind of work counted since last time, and what that charged; a counter and a one-time code from the server; a signature that chains this check-in to the ones before it; and your **edit record's** length and newest fingerprint (see below). **Nothing about what you are editing** |
 | Only if a check-in is refused | `GET /api/timer/windows/<window>` | nothing but the token. It asks whether this window was closed (for example, because you opened the contest on another PC) |
@@ -226,7 +230,7 @@ only came out as test builds, so 0.8.0 is the first ordinary Lumit release it
 installs in. Lumit refuses to install it in anything older. Get Lumit from
 Lumit's own download page, https://lumitlab.com/download.
 
-1. Download `reluduali-lumit-0.2.2.zip`, from **https://reluduali.com/lumit**
+1. Download `reluduali-lumit-0.2.3.zip`, from **https://reluduali.com/lumit**
    or from this repository's *Releases*. They are the same file.
 2. Check it is the right file (next section). This step is optional, but it
    takes one line.
@@ -246,17 +250,17 @@ have. If the panel says WebView2 is missing, install it from Microsoft.
 
 ## Checking that your download is this one
 
-Every copy of version 0.2.2 is exactly the same file, byte for byte. Its
+Every copy of version 0.2.3 is exactly the same file, byte for byte. Its
 fingerprint (SHA-256) is:
 
 ```
-7819D08929A69B369882820D8D4BE7525B798B1825E89335004D269F2B977582
+25567B9CB4DE5E9283C53AEE105AB12279513C1E7F0AA5394BDF2A4D254D74B3
 ```
 
 To check yours: open PowerShell in the folder that holds the zip, and run
 
 ```powershell
-Get-FileHash .\reluduali-lumit-0.2.2.zip
+Get-FileHash .\reluduali-lumit-0.2.3.zip
 ```
 
 It prints a `Hash`. If it is the line above, you have this file. If it is
@@ -280,6 +284,11 @@ your PC. What the panel keeps is the token that comes back.
 
 Then choose your contest, press **Enter**, then **Open my window**. The clock
 starts on your first edit.
+
+To edit with a friend, choose them as your partner when you enter. If you
+entered on your own, you can still ask one later, on the *Partner* page, and
+a friend who entered on their own can still say yes to yours. You can add
+friends on that page too.
 
 ## Removing it
 
@@ -320,11 +329,17 @@ folder, and need nothing else installed.
   runs on a free port with an empty data folder in the system's temporary
   folder, so nothing real is touched. **So today only the people who run
   reluduali.com can run this check.** It ends with a line such as
-  `ran 27 of 27 · 27 passed · 0 failed · 0 browser processes left`. Its run on
-  version 0.2.2, on 18 October 2026, passed 27 of 27.
+  `ran 30 of 30 · 30 passed · 0 failed · 0 browser processes left`. Its run on
+  version 0.2.3, on 18 October 2026, passed 30 of 30.
 
 ## Versions
 
+- **0.2.3** (18 October 2026): you can join a partner after you started on
+  your own. Your entry joins theirs, the time you used counts in your one
+  shared budget, and your must-use demos go back for their full price; the
+  panel says so and asks once more. You can ask a friend, or take the
+  invitation back, after entering on your own. Friends can be added, and
+  friend requests accepted, inside the panel.
 - **0.2.2** (17 October 2026): new contests, friends and invitations show
   without signing in again. They are read when the *Contest* or *Partner*
   page opens, every minute while one shows, and on **Refresh**.
