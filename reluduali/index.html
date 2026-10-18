@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- This page may run only its own files, and may not open any connection of
+     its own: no fetch, no WebSocket, nothing. It reaches reluduali.com only
+     by asking Lumit (net.fetch), which allows that one site. The browser
+     inside Lumit enforces this line, whatever the scripts below say. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https://reluduali.com; font-src 'self'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reluduali</title>
+<link rel="stylesheet" href="panel.css">
+<script src="clock.js" defer></script>
+<script src="server.js" defer></script>
+<script src="panel.js" defer></script>
+</head>
+<body>
+<div class="app" id="app" data-screen="loading">
+
+<nav class="side" aria-label="Reluduali">
+  <div class="brand"><span class="mark" aria-hidden="true">R</span><span>Reluduali</span></div>
+  <button class="nav" type="button" data-go="overview">Overview</button>
+  <button class="nav" type="button" data-go="contest">Contest</button>
+  <button class="nav" type="button" data-go="demos">Demos</button>
+  <button class="nav" type="button" data-go="partner">Partner</button>
+  <button class="nav" type="button" data-go="record">Record</button>
+  <button class="nav" type="button" data-go="render">Render</button>
+  <button class="nav" type="button" data-go="handin">Hand in</button>
+  <span class="grow"></span>
+  <button class="nav who" type="button" data-go="account" id="who">Signed in</button>
+</nav>
+
+<main class="main">
+  <button class="back" type="button" data-go="overview" id="back">‹ Timer</button>
+
+  <section class="screen" id="s-loading" aria-label="Starting">
+    <p class="note" id="loading-note">Starting…</p>
+  </section>
+
+  <!-- 4 · Sign in -->
+  <section class="screen" id="s-signin" aria-labelledby="signin-h">
+    <div class="signin">
+      <form class="signin-form" id="signin-form" novalidate>
+        <div class="lockup">
+          <span class="mark big" aria-hidden="true">R</span>
+          <div>
+            <h1 id="signin-h">Sign in with your Reluduali account</h1>
+            <p class="sub">The same account as the Demo Database and the contest site</p>
+          </div>
+        </div>
+        <div class="field"><label for="signin-name">Name</label><input id="signin-name" class="in" autocomplete="username" spellcheck="false" required></div>
+        <div class="field"><label for="signin-pass">Password</label><input id="signin-pass" class="in" type="password" autocomplete="current-password" required></div>
+        <p class="error" id="signin-error" role="alert" hidden></p>
+        <div class="row">
+          <button class="btn pri" type="submit" id="signin-go">Sign in</button>
+          <button class="link" type="button" id="signin-make">Make a Reluduali account</button>
+        </div>
+        <p class="note">Your password goes to reluduali.com once, to sign you in. It is never saved on this PC.</p>
+      </form>
+      <aside class="sends" aria-labelledby="sends-h">
+        <h2 class="h" id="sends-h">What this extension sends, and nothing else</h2>
+        <ol>
+          <li><b>Signing in:</b> your name and password, once.</li>
+          <li><b>About once a minute, while your window is open:</b> how long you edited and rendered in Lumit, what that charged, and a fingerprint of your edit record so far.</li>
+          <li><b>When a render finishes:</b> its fingerprint and size. Never the file or its name.</li>
+          <li><b>When you hand in:</b> the links you type, and your edit record: the name and time of each step you made in the contest project, as Lumit names them (“Set keyframe”). Never what the step did, and nothing from another project.</li>
+          <li><b>With a partner:</b> the invite link to your shared Lumit project, for your partner alone.</li>
+        </ol>
+        <p class="note">All of it goes through Lumit to reluduali.com, and nowhere else. This panel keeps a plain list of every message it sent: <b>Signed in as…</b>, at the bottom of the menu, once you are in.</p>
+      </aside>
+    </div>
+  </section>
+
+  <!-- 2, 3 and 11 · the timer: docked small, or the overview when the panel is large -->
+  <section class="screen" id="s-overview" aria-label="Timer">
+    <div class="overview">
+      <div class="card clockcard" id="clockcard">
+        <div class="clock-head"><span class="h" id="oc-title">No contest</span><span class="mono dim" id="oc-ends"></span></div>
+        <div class="clock-line"><span class="clock mono" id="oc-clock">–:––:––</span><span class="of" id="oc-of"></span></div>
+        <div class="bar" id="oc-bar" role="img" aria-label="Time spent"><span class="seg rec" id="oc-bar-rec"></span><span class="seg edit" id="oc-bar-edit"></span><span class="seg rend" id="oc-bar-rend"></span><span class="seg other" id="oc-bar-other"></span></div>
+        <div class="people">
+          <div class="person" id="oc-me"><span class="lbl">You</span><span class="now"><span class="dot"></span><span class="what"></span><span class="rate mono"></span></span></div>
+          <div class="person" id="oc-partner" hidden><span class="lbl"></span><span class="now"><span class="dot"></span><span class="what"></span><span class="rate mono"></span></span></div>
+          <div class="person" id="oc-console" hidden><span class="lbl">Your Console</span><span class="now"><span class="dot"></span><span class="what"></span><span class="rate mono"></span></span></div>
+        </div>
+        <p class="line" id="oc-line"></p>
+        <div class="witness">
+          <span class="wline" id="oc-witness"></span>
+          <span class="wline dim" id="oc-project"></span>
+        </div>
+        <div class="row" id="oc-cta" hidden>
+          <button class="btn pri" type="button" id="oc-open">Open my window</button>
+          <button class="btn" type="button" data-go="contest">Choose a contest</button>
+        </div>
+        <div class="row" id="oc-fix-project" hidden>
+          <button class="btn" type="button" id="oc-count-this">Count this project instead</button>
+        </div>
+        <div class="quick" aria-label="More of Reluduali">
+          <button class="btn" type="button" data-go="record">Console</button>
+          <button class="btn" type="button" data-go="render">Render</button>
+          <button class="btn" type="button" data-go="handin">Hand in</button>
+          <button class="btn" type="button" id="more-open" aria-expanded="false" aria-controls="more">More</button>
+        </div>
+        <div class="more" id="more" hidden>
+          <button class="btn" type="button" data-go="contest">Contest</button>
+          <button class="btn" type="button" data-go="partner">Partner</button>
+          <button class="btn" type="button" data-go="demos">Demos</button>
+          <button class="btn" type="button" data-go="account">Account</button>
+        </div>
+        <table class="spent" id="oc-spent">
+          <caption class="h">Where the time went</caption>
+          <thead><tr><th scope="col">Spent on</th><th scope="col">worked</th><th scope="col">rate</th><th scope="col">charged</th></tr></thead>
+          <tbody id="oc-spent-rows"></tbody>
+          <tfoot><tr><th scope="row">Total</th><td></td><td></td><td class="mono" id="oc-spent-total"></td></tr></tfoot>
+        </table>
+      </div>
+
+      <div class="stack side-cards">
+      <div class="card" id="oc-entry">
+        <span class="h">Your entry</span>
+        <p class="big-line" id="oe-what">Nothing handed in yet</p>
+        <p class="note" id="oe-detail"></p>
+        <div class="row">
+          <button class="btn pri" type="button" data-go="render">Render and replace</button>
+          <button class="btn" type="button" data-go="handin">See the hand-in</button>
+        </div>
+      </div>
+
+      <div class="card" id="oc-witnessed">
+        <span class="h">Witnessed by the server</span>
+        <ol class="beats mono" id="ow-list"></ol>
+        <p class="wline mono" id="ow-record"></p>
+        <p class="note">Each line is a check-in the server accepted and stamped with its own clock. Of your edit, only each step's name and time leave this PC, and only at hand-in.</p>
+      </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 · Contest and window -->
+  <section class="screen" id="s-contest" aria-labelledby="ct-name">
+    <header class="head">
+      <div><h1 id="ct-name">Contests</h1><p class="sub" id="ct-facts"></p></div>
+      <span class="sub" id="ct-org"></span>
+    </header>
+    <div class="card" id="ct-pick">
+      <div class="row"><span class="h">Contests on reluduali.com</span><button class="btn" type="button" id="ct-refresh">Refresh</button></div>
+      <ul class="list" id="ct-list"></ul>
+      <p class="note" id="ct-none" hidden>No contests are open yet.</p>
+      <p class="error" id="ct-pick-error" role="alert" hidden></p>
+    </div>
+    <div class="grid two" id="ct-detail" hidden>
+      <div class="card">
+        <span class="h">What each thing costs</span>
+        <ul class="rates" id="ct-rates"></ul>
+        <p class="note">Working with a partner? You share one budget. When you both work, it goes down faster.</p>
+      </div>
+      <div class="card">
+        <span class="h">In Lumit</span>
+        <p id="ct-lumit"></p>
+      </div>
+      <div class="card span2" id="ct-enter">
+        <span class="h">Enter</span>
+        <div id="ct-enter-body"></div>
+        <p class="error" id="ct-error" role="alert" hidden></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 · Demos from the Demo Database -->
+  <section class="screen" id="s-demos" aria-labelledby="dm-h">
+    <header class="head"><div><h1 id="dm-h">Demos</h1><p class="sub">from the Demo Database</p></div></header>
+    <div class="card">
+      <span class="h">Not yet</span>
+      <p>The Demo Database cannot hand out demos yet. When it can, a contest's demos will show here as soon as your window opens, so nobody can start early.</p>
+      <p class="note">Until then, the contest's page on reluduali.com says where its demos are.</p>
+    </div>
+  </section>
+
+  <!-- 7 · Partner on shared time -->
+  <section class="screen" id="s-partner" aria-labelledby="pt-h">
+    <header class="head"><div><h1 id="pt-h">Editing partner</h1><p class="sub">A dual edit: two Reluduali friends, one Lumit project, one shared budget</p></div></header>
+    <div class="grid two">
+      <div class="card" id="pt-team">
+        <span class="h">Your team</span>
+        <div class="team">
+          <span class="avatars"><span class="av me" aria-hidden="true">Y</span><span class="av them" id="pt-initial" aria-hidden="true">?</span></span>
+          <span><span class="big-line" id="pt-names">No partner</span><span class="note block" id="pt-note"></span></span>
+        </div>
+        <p class="status" id="pt-share-status"></p>
+        <div class="row" id="pt-actions"></div>
+        <p class="error" id="pt-error" role="alert" hidden></p>
+      </div>
+      <div class="card">
+        <span class="h">How shared time goes down</span>
+        <ul class="rates" id="pt-rates"></ul>
+        <p class="note">Each of you sees what the other is doing (editing, recording, rendering), never what is on their screen.</p>
+      </div>
+      <div class="card span2">
+        <span class="h">Your friends</span>
+        <ul class="list" id="pt-friends"></ul>
+        <p class="note">Only Reluduali friends can edit with you. You choose your partner when you enter a contest. Add friends on reluduali.com.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 · Record with the console -->
+  <section class="screen" id="s-record" aria-labelledby="rc-h">
+    <header class="head">
+      <div><h1 id="rc-h">Record</h1><p class="sub">The Reluduali Console records each demo, and Lumit brings in what lands</p></div>
+      <span class="status-pill"><span class="dot off" id="rc-pill-dot"></span><span id="rc-pill">Console not linked</span></span>
+    </header>
+    <div class="grid two">
+      <div class="card" id="rc-console">
+        <span class="h">The Console</span>
+        <p id="rc-state"></p>
+        <div class="code-box" id="rc-code-box" hidden>
+          <span class="code mono" id="rc-code"></span>
+          <span class="note" id="rc-code-note"></span>
+        </div>
+        <div class="row"><button class="btn pri" type="button" id="rc-link">Link the Console</button><button class="btn" type="button" id="rc-unlink" hidden>Unlink</button></div>
+        <ul class="rates" id="rc-rates"></ul>
+        <p class="note" id="rc-note"></p>
+        <p class="error" id="rc-error" role="alert" hidden></p>
+      </div>
+      <div class="card">
+        <span class="h">Where it lands</span>
+        <p>Choose the folder your recordings are saved to. Each new file there comes into your project once it has finished being written.</p>
+        <p class="mono path" id="rc-folder">No folder is watched</p>
+        <div class="row"><button class="btn" type="button" id="rc-watch">Watch a folder</button><button class="btn" type="button" id="rc-unwatch" hidden>Stop watching</button></div>
+      </div>
+      <div class="card span2">
+        <span class="h">Brought into the project</span>
+        <ul class="list" id="rc-list"></ul>
+        <p class="note" id="rc-empty">Nothing yet.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9 · Render out of Lumit -->
+  <section class="screen" id="s-render" aria-labelledby="rd-h">
+    <header class="head"><div><h1 id="rd-h">Render</h1><p class="sub" id="rd-sub">Lumit's own export, watched by this panel: fingerprinted when it is done</p></div></header>
+    <div class="grid two">
+      <div class="card">
+        <span class="h">Export</span>
+        <p id="rd-how">Start the export in Lumit's own Export window. This panel cannot start one; it watches it.</p>
+        <span class="h">Last renders</span>
+        <table class="renders">
+          <thead><tr><th scope="col">render</th><th scope="col">finished</th><th scope="col">fingerprint</th><th scope="col"><span class="vh">status</span></th></tr></thead>
+          <tbody id="rd-list"></tbody>
+        </table>
+        <p class="note" id="rd-empty">None yet.</p>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <span class="h">When it's done</span>
+          <button class="opt" type="button" id="rd-replace" aria-pressed="true">
+            <span class="ring"></span>
+            <span><span class="opt-t">Render and replace my entry</span><span class="opt-d" id="rd-replace-d">The new render takes the place of your hand-in. Your YouTube link stays, and the organizer sees the new fingerprint. Until the deadline you can replace it as often as you like.</span></span>
+          </button>
+          <button class="opt" type="button" id="rd-just" aria-pressed="false">
+            <span class="ring"></span>
+            <span><span class="opt-t">Just render</span><span class="opt-d">A preview for you. Your hand-in stays as it is.</span></span>
+          </button>
+        </div>
+        <div class="card" id="rd-live" hidden>
+          <div class="live-head"><span class="dot rend"></span><span class="h amber" id="rd-live-h">Rendering</span><span class="mono dim" id="rd-live-left"></span></div>
+          <div class="bar thin"><span class="seg rend" id="rd-live-bar"></span></div>
+          <div class="between"><span class="mono" id="rd-live-frames"></span><span id="rd-live-timed"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 · Hand in -->
+  <section class="screen" id="s-handin" aria-labelledby="hi-h">
+    <header class="head">
+      <div><h1 id="hi-h">Hand in</h1><p class="sub" id="hi-sub"></p></div>
+      <span class="sub ok" id="hi-latest"></span>
+    </header>
+    <div class="grid two">
+      <form class="card" id="hi-form" novalidate>
+        <span class="h">Your entry</span>
+        <div class="field"><label for="hi-yt">YouTube link</label><input id="hi-yt" class="in" inputmode="url" spellcheck="false" placeholder="https://youtu.be/…"></div>
+        <div class="field"><label for="hi-hq">Full-quality file (a link you host)</label><input id="hi-hq" class="in" inputmode="url" spellcheck="false" placeholder="https://…"></div>
+        <p class="note" id="hi-render"></p>
+        <p class="note">Until the deadline only your team and the organizer see this. After it, everyone sees the YouTube link. The file link is only ever the organizer's.</p>
+        <p class="error" id="hi-error" role="alert" hidden></p>
+        <div class="row"><button class="btn pri" type="submit" id="hi-go">Hand in</button><button class="btn" type="button" data-go="render">Render again</button></div>
+      </form>
+      <div class="card">
+        <span class="h">Checked</span>
+        <ul class="checks" id="hi-checks"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Account: who is signed in, and every message this panel has sent -->
+  <section class="screen" id="s-account" aria-labelledby="ac-h">
+    <header class="head"><div><h1 id="ac-h">Account</h1><p class="sub" id="ac-who"></p></div></header>
+    <div class="grid two">
+      <div class="card">
+        <span class="h">This panel</span>
+        <p class="note" id="ac-versions"></p>
+        <div class="row"><button class="btn" type="button" id="ac-signout">Sign out</button></div>
+      </div>
+      <div class="card span2">
+        <span class="h">Every message this panel has sent, since it opened</span>
+        <ol class="sent mono" id="ac-sent"></ol>
+        <p class="note">Only where each went and what the server answered. What you typed is not kept here.</p>
+      </div>
+    </div>
+  </section>
+</main>
+</div>
+
+<div class="nolumit" id="nolumit" hidden>
+  <p><b>This page is a panel for Lumit.</b> It works only inside Lumit, which lends it the one way it has to reach reluduali.com.</p>
+</div>
+</body>
+</html>

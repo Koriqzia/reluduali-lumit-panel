@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "id": "reluduali",
+  "name": "Reluduali",
+  "version": "0.2.2",
+  "summary": "The Reluduali contest clock: your account, your contest, your partner and your renders, in a panel inside Lumit.",
+  "author": "Reluduali",
+  "homepage": "https://reluduali.com",
+  "requires": "0.7.1",
+  "entry": "index.html",
+  "permissions": ["project", "activity", "export", "import", "share"],
+  "hosts": ["reluduali.com"]
+}
