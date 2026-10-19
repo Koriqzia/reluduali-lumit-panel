@@ -1,6 +1,6 @@
 # The Reluduali panel for Lumit
 
-**The Reluduali contest clock, as a panel inside Lumit. Version 0.2.3.**
+**The Reluduali contest clock, as a panel inside Lumit. Version 0.3.0.**
 
 Reluduali runs editing contests. Each entrant gets the same amount of editing
 time. This panel is the clock that keeps that time. It sits inside Lumit, the
@@ -98,8 +98,8 @@ from. That is how the internet works, and no program can avoid it.
 | Every 3 seconds while a Console code is waiting (10 minutes at most) | `GET /api/contests/<contest>/entry` | nothing but the token. It asks whether the Console has used the code |
 | You press **Enter** | `POST /api/contests/<contest>/enter` | the friend you chose as your partner, by name. Nothing if you enter alone |
 | You accept a partner's invitation | `POST /api/contests/<contest>/join/<entry>` | nothing but the token. If you had entered on your own, your entry joins theirs: the time you used counts in your one shared budget, and your must-use demos go back for their full price. The panel says this and asks you once more before it sends anything |
-| You entered on your own, and press **Ask to edit together** next to a friend | `POST /api/contests/<contest>/invite` | that friend's Reluduali name |
-| You press **Take back the invitation**, before they answer | `DELETE /api/contests/<contest>/invite` | nothing but the token |
+| You press **Ask to edit together** next to a friend, after entering (a team is up to four, counting those asked) | `POST /api/contests/<contest>/invite` | that friend's Reluduali name |
+| You press **Take back the invitation**, before they answer | `DELETE /api/contests/<contest>/invite` | the Reluduali name of the friend whose invitation you take back |
 | You press **Send a friend request** | `POST /api/friends` | the Reluduali name you typed |
 | You press **Accept** on a friend request someone sent you | `POST /api/friends/requests/<person>/accept` | nothing but the token |
 | You press **Open my window**, or Lumit restarts while your window was open | `POST /api/timer/windows` | which contest |
@@ -110,8 +110,10 @@ from. That is how the internet works, and no program can avoid it.
 | That export fails or is stopped | the same | only that it stopped |
 | You press **Hand in** | `POST /api/contests/<contest>/submission` | the YouTube link and the file link you type, and the fingerprint of the render you choose |
 | An export finishes, you chose **Render and replace my entry**, and you have handed in before | the same | your same two links, and the new render's fingerprint |
+| At three moments in a contest that reluduali.com picks and never says in advance, while your window is open | `POST /api/timer/windows/<window>/snapshot` | only a **seal**: a fingerprint of a summary of the contest project, mixed with a random number reluduali.com sent at that moment and one the panel made. Nothing about the project can be read from it |
 | With every hand-in | `POST /api/contests/<contest>/edit-record` | your **edit record**: the name and time of each step you made in the contest project (see below) |
-| You share your project with your partner | `POST /api/contests/<contest>/share` | the invite link to your shared Lumit project, left on reluduali.com **for your partner alone** |
+| With every hand-in, if any snapshot was asked for | `POST /api/contests/<contest>/snapshots` | the snapshots opened: each one's summary and the panel's random number, so reluduali.com can check each against its seal. A summary is counts and lengths (clips, effects, steps), never a file's name, a folder or anything you wrote. Until Lumit gives the panel such a summary, it is the project's id and the edit record's length and newest fingerprint |
+| You share your project with your partner | `POST /api/contests/<contest>/share` | the invite link to your shared Lumit project, left on reluduali.com **for the others in your team alone** |
 | You stop sharing | `DELETE /api/contests/<contest>/share` | nothing but the token. The link is taken back |
 | Your partner presses **Join** | `GET /api/contests/<contest>/share` | nothing but the token. It fetches the invite link you left |
 | You press **Link the Console** | `POST /api/contests/<contest>/console-code` | nothing but the token. A one-time code comes back, for you to type into the Console |
@@ -140,8 +142,8 @@ match. What the organizer can see is the list: step names and times, nothing
 else.
 
 **About the partner link.** Whoever has that link can join the project and
-edit it. That is how Lumit's sharing works. reluduali.com shows it to your
-partner and to nobody else, and drops it after 48 hours. If you would rather
+edit it. That is how Lumit's sharing works. reluduali.com shows it to the
+others in your team and to nobody else, and drops it after 48 hours. If you would rather
 it never passed through reluduali.com, set a password in Lumit's own
 *Shared project* window, and tell your partner the password another way.
 
@@ -196,7 +198,8 @@ In the panel's own storage, which Lumit keeps for this panel alone:
 - your renders' **fingerprints** and when they finished (not their names or
   where they are);
 - your **edit record**: each step's name and time, for this contest only;
-- whether you chose *Render and replace my entry*.
+- whether you chose *Render and replace my entry*;
+- the snapshots it sealed, until they are opened at hand-in.
 
 **Sign out**, on the *Account* page, forgets the token at once.
 
@@ -230,7 +233,7 @@ only came out as test builds, so 0.8.0 is the first ordinary Lumit release it
 installs in. Lumit refuses to install it in anything older. Get Lumit from
 Lumit's own download page, https://lumitlab.com/download.
 
-1. Download `reluduali-lumit-0.2.3.zip`, from **https://reluduali.com/lumit**
+1. Download `reluduali-lumit-0.3.0.zip`, from **https://reluduali.com/lumit**
    or from this repository's *Releases*. They are the same file.
 2. Check it is the right file (next section). This step is optional, but it
    takes one line.
@@ -250,17 +253,17 @@ have. If the panel says WebView2 is missing, install it from Microsoft.
 
 ## Checking that your download is this one
 
-Every copy of version 0.2.3 is exactly the same file, byte for byte. Its
+Every copy of version 0.3.0 is exactly the same file, byte for byte. Its
 fingerprint (SHA-256) is:
 
 ```
-25567B9CB4DE5E9283C53AEE105AB12279513C1E7F0AA5394BDF2A4D254D74B3
+CB060DB78F36F73EF6265B8E4406210DAA52945583393CA4802ABCFAD08C7E31
 ```
 
 To check yours: open PowerShell in the folder that holds the zip, and run
 
 ```powershell
-Get-FileHash .\reluduali-lumit-0.2.3.zip
+Get-FileHash .\reluduali-lumit-0.3.0.zip
 ```
 
 It prints a `Hash`. If it is the line above, you have this file. If it is
@@ -285,10 +288,10 @@ your PC. What the panel keeps is the token that comes back.
 Then choose your contest, press **Enter**, then **Open my window**. The clock
 starts on your first edit.
 
-To edit with a friend, choose them as your partner when you enter. If you
-entered on your own, you can still ask one later, on the *Partner* page, and
-a friend who entered on their own can still say yes to yours. You can add
-friends on that page too.
+To edit with friends, choose one as your partner when you enter, and ask more
+on the *Partner* page: a team is up to four. If you entered on your own, you
+can still ask later, and a friend who entered on their own can still say yes
+to yours. You can add friends on that page too.
 
 ## Removing it
 
@@ -329,11 +332,16 @@ folder, and need nothing else installed.
   runs on a free port with an empty data folder in the system's temporary
   folder, so nothing real is touched. **So today only the people who run
   reluduali.com can run this check.** It ends with a line such as
-  `ran 30 of 30 · 30 passed · 0 failed · 0 browser processes left`. Its run on
-  version 0.2.3, on 18 October 2026, passed 30 of 30.
+  `ran 32 of 32 · 32 passed · 0 failed · 0 browser processes left`. Its run on
+  version 0.3.0, on 19 October 2026, passed 32 of 32.
 
 ## Versions
 
+- **0.3.0** (19 October 2026): a team is up to four. Ask more friends from the
+  *Partner* page after entering, and take back each invitation on its own. The
+  clock and the *Partner* page show everyone in the team. Sealed snapshots: at three
+  moments in a contest that nobody knows in advance, a seal of a summary of the
+  contest project, opened at hand-in so reluduali.com can check it.
 - **0.2.3** (18 October 2026): you can join a partner after you started on
   your own. Your entry joins theirs, the time you used counts in your one
   shared budget, and your must-use demos go back for their full price; the

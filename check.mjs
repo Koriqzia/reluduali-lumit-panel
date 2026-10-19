@@ -44,7 +44,10 @@ const ALLOWED = [
   ['POST', /^\/api\/contests\/[\w-]+\/join\/[\w-]+$/, []],
   // 0.2.3: asking a friend after entering on your own, and taking it back; friend requests.
   ['POST', /^\/api\/contests\/[\w-]+\/invite$/, ['partner']],
-  ['DELETE', /^\/api\/contests\/[\w-]+\/invite$/],
+  ['DELETE', /^\/api\/contests\/[\w-]+\/invite$/, ['partner']],
+  // 0.3.0: a snapshot's seal, and the snapshots opened at hand-in.
+  ['POST', /^\/api\/timer\/windows\/[\w-]+\/snapshot$/, ['n', 'seal']],
+  ['POST', /^\/api\/contests\/[\w-]+\/snapshots$/, ['snapshots']],
   ['GET', /^\/api\/friends$/],
   ['GET', /^\/api\/friends\/requests$/],
   ['POST', /^\/api\/friends$/, ['username']],
@@ -329,7 +332,7 @@ const PERMISSIONS = ['project', 'activity', 'export', 'import', 'share'];
 /** Which permission each call needs; the brief's API table. Calls under '' need none. */
 const NEEDS = {
   'app.info': '', 'app.notice': '', 'app.status': '', 'app.openExternal': '', 'net.fetch': '',
-  'project.info': 'project',
+  'project.info': 'project', 'project.summary': 'project',
   'export.state': 'export', 'export.fingerprint': 'export',
   'import.files': 'import', 'import.watch': 'import', 'import.unwatch': 'import',
   'share.state': 'share', 'share.link': 'share', 'share.start': 'share', 'share.join': 'share', 'share.stop': 'share',
@@ -417,11 +420,14 @@ function pretendLumit(page, serverBase, manifest) {
         let u;
         try { u = new URL(params?.url); } catch { return refuse('bad-params', 'no url'); }
         if (u.protocol !== 'https:' || !onHosts(u.hostname, manifest.hosts)) return refuse('not-allowed', 'not one of its hosts');
-        host.requests.push({ method: params.method || 'GET', path: u.pathname, search: u.search, headers: params.headers || {}, body: params.body ?? null });
+        const rec = { method: params.method || 'GET', path: u.pathname, search: u.search, headers: params.headers || {}, body: params.body ?? null };
+        host.requests.push(rec);
         if (host.offlineUntil && Date.now() < host.offlineUntil) return refuse('failed', 'the site could not be reached');
         try {
           const res = await fetch(serverBase + u.pathname + u.search, { method: params.method || 'GET', headers: params.headers || {}, body: params.body ?? undefined, redirect: 'manual' });
           const body = await res.text();
+          rec.answer = res.status;   // for a failing step to say what came back
+          if (res.status >= 400) rec.answerBody = body.slice(0, 200);
           // The request arrived, and only its answer is lost on the way back.
           if (host.dropNextBeatAnswer && u.pathname.endsWith('/beat')) { host.dropNextBeatAnswer = false; return refuse('failed', 'the answer was lost'); }
           return { ok: true, payload: { status: res.status, headers: Object.fromEntries(res.headers), body } };
@@ -432,6 +438,8 @@ function pretendLumit(page, serverBase, manifest) {
       // Lumit 0.7.0 has no project id.
       case 'project.info': return { ok: true, payload: host.lumitVersion === '0.7.0' ? { ...host.project, id: undefined } : host.project };
       case 'export.state': return { ok: true, payload: host.exportState };
+      // Lumit has no project.summary yet (asked of its creator, 2026-10-18). A step gives one when it wants Lumit's.
+      case 'project.summary': return host.summary ? { ok: true, payload: host.summary } : refuse('unknown-method', method);
       case 'export.fingerprint': return host.lastExport ? { ok: true, payload: host.lastExport } : refuse('failed', 'no export has finished since the panel opened');
       case 'import.watch':
         if (params && params.folder) return params.folder === host.picked ? { ok: true, payload: { folder: params.folder } } : refuse('not-allowed', 'not a folder the person picked');
@@ -486,7 +494,7 @@ const text = (sel) => page.eval(`(document.querySelector(${JSON.stringify(sel)})
 /** Another project open in Lumit, or this one saved: what project.info answers from now on, and the event. */
 const projectIs = async (p) => { lumit.project = p; await lumit.emit('project.changed', p); };
 
-let organizer, alice, bob, dave, contest;
+let organizer, alice, bob, dave, erin, fay, contest;
 
 try {
   organizer = await account(db.base, 'organizer');
@@ -863,8 +871,8 @@ try {
   });
 
   await step('a friend request from the Partner page, said yes to on reluduali.com, shows without signing out; one sent to you is accepted there', async () => {
-    const erin = await account(db.base, 'erin');
-    const fay = await account(db.base, 'fay');
+    erin = await account(db.base, 'erin');
+    fay = await account(db.base, 'fay');
     await page.eval(`document.querySelector('.nav[data-go="partner"]').click()`);
     await page.type('#pt-add-name', 'erin');
     await page.click('#pt-add-go');
@@ -906,6 +914,107 @@ try {
     await page.clickText('#pt-actions button', 'Take back the invitation');
     await page.waitFor(`/You entered on your own\\. You can still ask a friend/.test(document.getElementById('pt-note').textContent)`, 5000, 'taken back');
     expect((await alice.call(`/api/contests/${cup.id}/entry`)).data.members.length === 1, 'the invitation is still on the server');
+  });
+
+  // 0.3.0 (the organizer, 2026-10-18: "There can be up to 4 People in a Group entering a Contest."): a team of three from the
+  // Partner page. Two friends asked at once, one invitation taken back by name, asked again; both say yes on
+  // reluduali.com; the Partner page and the clock show the three of them.
+  await step('a team of up to four: two friends asked from the Partner page, one taken back by name; both join; the clock shows the team', async () => {
+    const cup = (await organizer.call('/api/contests', 'POST', { ...RULES, name: 'Trio cup' })).data;
+    expect((await alice.call(`/api/contests/${cup.id}/enter`, 'POST', {})).status === 200, 'alice could not enter Trio cup');
+    await page.eval(`document.querySelector('.nav[data-go="contest"]').click()`);
+    await page.waitFor(`[...document.querySelectorAll('#ct-list li')].some((li) => li.textContent.includes('Trio cup'))`, 5000, 'Trio cup in the list');
+    await page.eval(`[...document.querySelectorAll('#ct-list li')].find((li) => li.textContent.includes('Trio cup')).querySelector('button').click()`);
+    // Until the panel has the new contest, the Contest page still shows the last one's words: wait for its name.
+    await page.waitFor(`document.getElementById('ct-name').textContent.includes('Trio cup') && /Open my window/.test(document.getElementById('ct-enter-body').textContent)`, 10000, 'Trio cup chosen, entered');
+    await page.eval(`document.querySelector('.nav[data-go="partner"]').click()`);
+    await page.waitFor(`!document.getElementById('s-partner').hidden && document.getElementById('pt-names').textContent === 'Just you' && /You entered on your own\\. You can still ask a friend/.test(document.getElementById('pt-note').textContent)`, 5000, 'the offer to ask');
+    const ask = async (name) => {
+      await page.eval(`[...document.querySelectorAll('#pt-friends li')].find((li) => li.textContent.includes(${JSON.stringify(name)})).querySelector('button').click()`);
+      try {
+        await page.waitFor(`/You asked [^.]*${name}/.test(document.getElementById('pt-share-status').textContent)`, 5000, `${name} asked`);
+      } catch (e) {
+        throw new Error(`${e.message}; the page says: ${JSON.stringify({ status: await text('#pt-share-status'), note: await text('#pt-note'), error: await text('#pt-error'), names: await text('#pt-names') })}`
+          + `; its last requests: ${JSON.stringify(lumit.requests.slice(-4).map((r) => `${r.method} ${r.path} ${r.answer ?? ''} ${r.answerBody ?? ''}`))}`
+          + `; the server has: ${JSON.stringify((await alice.call(`/api/contests/${cup.id}/entry`)).data?.members?.map((m) => [m.username, m.accepted]))}`
+          + `; the invite sent: ${JSON.stringify(lumit.requests.filter((r) => r.path.endsWith('/invite')).slice(-1).map((r) => r.body))}`
+          + `; the screen: ${await page.eval(`document.getElementById('app')?.dataset.screen + ' / partner hidden: ' + document.getElementById('s-partner').hidden`)}`
+          + `; page errors: ${JSON.stringify(page.errors.slice(-3))}`);
+      }
+    };
+    await ask('erin');
+    await ask('fay');
+    expect(/You asked erin and fay\. Until each says yes, you can take their invitation back\./.test(await text('#pt-share-status')), await text('#pt-share-status'));
+    expect(/asked, waiting for them to accept: erin and fay · you can ask one more friend/.test(await text('#pt-note')), await text('#pt-note'));
+    await page.clickText('#pt-actions button', 'Take back the invitation to fay');
+    await page.waitFor(`/You asked erin\. Until they say yes/.test(document.getElementById('pt-share-status').textContent)`, 5000, "fay's invitation taken back");
+    const left = await alice.call(`/api/contests/${cup.id}/entry`);
+    expect(JSON.stringify(left.data.members.map((m) => [m.username, m.accepted])) === '[["alice",true],["erin",false]]', JSON.stringify(left.data.members));
+    await ask('fay');
+    for (const [u, name] of [[erin, 'erin'], [fay, 'fay']]) {
+      const inv = (await u.call('/api/contests/invitations')).data.find((i) => i.contestId === cup.id);
+      expect(inv && inv.from.username === 'alice', `${name} has no invitation from alice`);
+      expect((await u.call(`/api/contests/${cup.id}/join/${inv.entryId}`, 'POST')).status === 200, `${name} could not say yes`);
+    }
+    await page.eval(`document.querySelector('.nav[data-go="overview"]').click()`);
+    await sleep(200);
+    await page.eval(`document.querySelector('.nav[data-go="partner"]').click()`);
+    // Their names show while they are only asked, too: wait until the panel has read that both said yes.
+    await page.waitFor(`document.getElementById('pt-names').textContent === 'You, erin and fay' && document.getElementById('pt-note').textContent.startsWith('in your team: erin and fay')`, 5000, 'the three of them');
+    expect(/^in your team: erin and fay · you can ask one more friend$/.test(await text('#pt-note')), await text('#pt-note'));
+    expect(/All 3 editing/.test(await text('#pt-rates')), await text('#pt-rates'));
+    expect(/One of you hosts the project; the others join it/.test(await text('#pt-share-status')), await text('#pt-share-status'));
+    await page.shot('15-team-of-three');
+    await page.eval(`document.querySelector('.nav[data-go="overview"]').click()`);
+    await page.waitFor(`/Trio cup · team of 3/.test(document.getElementById('oc-title').textContent)`, 5000, 'the clock says team of 3');
+    expect(await text('#oc-partner .lbl') === 'erin', await text('#oc-partner .lbl'));
+    expect(await page.eval(`[...document.querySelectorAll('#oc-team-more .person .lbl')].map((e) => e.textContent).join()`) === 'fay', 'fay is not on the clock');
+  });
+
+  // 0.3.0: sealed snapshots at random moments (on reluduali.com's side, docs/contests/SNAPSHOTS.md). A timed contest 50
+  // minutes into its 55: every moment, drawn between 10% and 90% of its hours, has come, so the first check-ins ask.
+  await step('sealed snapshots: asked on check-ins, sealed with a stand-in and then with Lumit\'s summary, opened at hand-in, all matching', async () => {
+    const now = Date.now();
+    const cup = (await organizer.call('/api/contests', 'POST', { ...RULES, name: 'Snap cup', staticClock: true, opensAt: now - 50 * 60000, submitBy: now + 5 * 60000 })).data;
+    expect(cup && cup.id, 'no Snap cup: ' + JSON.stringify(cup));
+    expect((await alice.call(`/api/contests/${cup.id}/enter`, 'POST', {})).status === 200, 'alice could not enter Snap cup');
+    lumit.summary = null;       // a Lumit without project.summary: the panel seals its stand-in
+    await page.eval(`document.querySelector('.nav[data-go="contest"]').click()`);
+    await page.waitFor(`[...document.querySelectorAll('#ct-list li')].some((li) => li.textContent.includes('Snap cup'))`, 5000, 'Snap cup in the list');
+    await page.eval(`[...document.querySelectorAll('#ct-list li')].find((li) => li.textContent.includes('Snap cup')).querySelector('button').click()`);
+    await page.waitFor(`document.getElementById('ct-name').textContent.includes('Snap cup') && /Open my window/.test(document.getElementById('ct-enter-body').textContent)`, 10000, 'Snap cup chosen, entered');
+    await page.clickText('#ct-enter-body button', 'Open my window');
+    await page.waitFor(`document.getElementById('app').dataset.screen === 'overview'`, 10000, 'the timer');
+    const sealed = async (k) => {
+      for (let i = 0; i < 60; i++) {
+        const people = (await organizer.call(`/api/contests/${cup.id}/snapshots`)).data.people;
+        const a = people.find((x) => x.username === 'alice');
+        if (a && a.snapshots.filter((x) => x.sealedAt).length >= k) return a;
+        await sleep(500);
+      }
+      throw new Error(`fewer than ${k} snapshots sealed`);
+    };
+    await sealed(2);
+    lumit.summary = { id: 'proj-1', duration: 42.5, fps: 60, width: 1920, height: 1080, tracks: [{ kind: 'video', clips: 3 }],
+      clips: [0, 1, 2].map((i) => ({ track: 0, kind: 'video', start: i * 14, duration: 14, sourceStart: 3, speed: 1, effects: i ? ['Glow'] : [], keyframes: i * 4, media: 0 })),
+      media: [{ kind: 'video', duration: 95.2, width: 1920, height: 1080, sha256: 'ef'.repeat(32) }], steps: 30 };
+    const three = await sealed(3);
+    expect(three.snapshots.map((x) => x.state).join() === 'sealed, not opened,sealed, not opened,sealed, not opened', JSON.stringify(three.snapshots.map((x) => x.state)));
+    // Handed in through the panel: the seals are opened with it.
+    await page.eval(`document.querySelector('.nav[data-go="handin"]').click()`);
+    await page.eval(`document.getElementById('hi-yt').value = ''; document.getElementById('hi-hq').value = ''; 1`);
+    await page.type('#hi-yt', 'https://youtu.be/dQw4w9WgXcQ');
+    await page.type('#hi-hq', 'https://drive.google.com/file/d/pretend-snap/view');
+    await page.click('#hi-go');
+    await page.waitFor(`/Your snapshots: 3 of 3 opened and matching their seals/.test(document.getElementById('hi-checks').textContent)`, 15000, 'the snapshots opened');
+    const opened = (await organizer.call(`/api/contests/${cup.id}/snapshots`)).data.people.find((x) => x.username === 'alice');
+    expect(opened.snapshots.map((x) => x.state).join() === 'matches,matches,matches', JSON.stringify(opened.snapshots.map((x) => x.state)));
+    const briefs = opened.snapshots.map((x) => x.summary);
+    expect(briefs[0].standIn === true && briefs[1].standIn === true && briefs[2].standIn === false && briefs[2].clips === 3 && briefs[2].effects === 1, JSON.stringify(briefs));
+    await page.shot('16-snapshots-opened');
+    // The Account page names the version Lumit installed.
+    await page.eval(`document.querySelector('.nav[data-go="account"]').click()`);
+    await page.waitFor(`document.getElementById('ac-versions').textContent.startsWith(${JSON.stringify('Reluduali panel ' + manifest.version)})`, 5000, 'the installed version');
   });
 
   await step('everything the panel sent is on the list, to reluduali.com only, with a bearer token and no cookie', async () => {

@@ -13,7 +13,7 @@
   // page can change it (lumit/check.mjs does, to run in seconds): Lumit
   // loads it as plain index.html.
   const BEAT_MS = Math.max(1000, Number(new URLSearchParams(location.search).get('beat')) || 60000);
-  const VERSION = '0.2.3';
+  const VERSION = '0.3.0';
   const KEY = {
     token: 'reluduali.token',
     contest: 'reluduali.contest',
@@ -22,6 +22,7 @@
     whenDone: 'reluduali.whenDone',
     renders: (contestId) => 'reluduali.renders.' + contestId,
     records: (contestId) => 'reluduali.records.' + contestId,
+    snapshots: (contestId) => 'reluduali.snapshots.' + contestId,
   };
 
   // The page's own storage, which Lumit keeps for this extension alone. It
@@ -264,8 +265,19 @@
 
   const deadlinePassed = () => !!(S.contest && S.contest.submitBy && Date.now() > S.contest.submitBy);
   const notOpenYet = () => !!(S.contest && S.contest.opensAt && Date.now() < S.contest.opensAt);
-  const partnerOf = (entry) => (entry ? entry.members.find((m) => m.id !== S.user.id) || null : null);
-  const teamReady = () => !!(S.entry && S.entry.members.length === 2 && S.entry.members.every((m) => m.accepted));
+  // A team is up to four (0.3.0; the organizer, 2026-10-18: "There can be up to 4 People in a Group entering a Contest."),
+  // counting the friends asked who have not said yes yet, as reluduali.com counts it.
+  const TEAM_MAX = 4;
+  /** Everyone else in your entry, in the order they came in: up to three. */
+  const teammatesOf = (entry) => (entry && S.user ? entry.members.filter((m) => m.id !== S.user.id) : []);
+  const partnerOf = (entry) => teammatesOf(entry)[0] || null;
+  /** Whether anyone else in the team has said yes: then the project can be shared. */
+  const teamReady = () => teammatesOf(S.entry).some((m) => m.accepted);
+  /** Names as a person writes them: "a", "a and b", "a, b and c". */
+  const inWords = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0] || '');
+  const namesOf = (people) => inWords(people.map((m) => m.username));
+  /** Who asked, for an invitation: everyone in the team that asked (reluduali.com's `team`), or the one who did. */
+  const askersOf = (inv) => (inv && inv.team && inv.team.length ? namesOf(inv.team) : inv && inv.from ? inv.from.username : 'A friend');
   const meIn = (entry) => (entry && S.user ? entry.members.find((m) => m.id === S.user.id) || null : null);
   /** The contest's categories the Reluduali Console times itself, never this panel. */
   const consoleCats = () => (S.contest ? S.contest.categories.filter((c) => c.console) : []);
@@ -286,6 +298,7 @@
     S.renders = store.json(KEY.renders(id)) || [];
     S.records = store.json(KEY.records(id)) || [];
     S.recordCheck = null;
+    S.snapshotCheck = null;
     S.entry = await guarded(() => RelServer.entry(S.token, id)).catch((e) => { if (e.status !== 404) throw e; return null; });
     S.submission = S.entry ? await guarded(() => RelServer.submission(S.token, id)).catch(() => null) : null;
     if (!quiet) render();
@@ -368,7 +381,7 @@
       const { joined, ...entry } = r;
       S.entry = entry;
       S.joined = joined ? { contestId: invitation.contestId, words: joined.words } : null;
-      if (joined) notice('joined-' + invitation.entryId, `You joined ${invitation.from ? invitation.from.username : 'your partner'}'s entry`);
+      if (joined) notice('joined-' + invitation.entryId, `You joined ${askersOf(invitation)}'s entry`);
       if (hadWindow) {
         const carry = S.ledger;
         try { await openWindow({ carry }); } catch (e) { stopWindow(); say('ct-error', `Your window could not open again: ${e.message}. Open it on this page.`); }
@@ -379,7 +392,7 @@
     render();
   }
 
-  /** Asking a friend to be your partner after entering on your own; and taking it back before they answer. */
+  /** Asking a friend into your team after entering, up to four; and taking one invitation back before they answer. */
   async function invite(username) {
     say('pt-error', '');
     try {
@@ -389,10 +402,10 @@
     }
     render();
   }
-  async function takeBack() {
+  async function takeBack(username) {
     say('pt-error', '');
     try {
-      S.entry = await guarded(() => RelServer.takeBackInvitation(S.token, S.contestId));
+      S.entry = await guarded(() => RelServer.takeBackInvitation(S.token, S.contestId, username));
     } catch (e) {
       say('pt-error', e.offline ? 'reluduali.com could not be reached.' : e.message);
     }
@@ -461,7 +474,7 @@
     say('ct-error', '');
     const r = await guarded(() => RelServer.openWindow(S.token, S.contestId));
     stopWindow({ keepNote: true });
-    S.win = { id: r.id, key: r.key, nonce: r.nonce, seq: r.seq, last: '' };
+    S.win = { id: r.id, key: r.key, nonce: r.nonce, seq: r.seq, last: '', contestId: S.contestId };
     // Each window keeps its own edit record, chained from the window itself.
     const steps = [];
     S.records.push({ id: r.id, steps });
@@ -561,10 +574,12 @@
       S.entry = r.entry;
       S.offlineSince = null;
       S.lastBeatOk = Date.now();
+      // A snapshot asked for (0.3.0): taken and sealed beside the check-ins, never holding them up.
+      if (r.snapshot) takeSnapshot(r.snapshot, w).catch(() => {});
       S.witnessed.unshift({ at: S.lastBeatOk, seq: r.seq, doing: segments.filter((s) => s.inFrontMs > 0).map((s) => s.category), gap: r.gap, elapsedMs: r.elapsedMs });
       if (S.witnessed.length > 40) S.witnessed.length = 40;
       const waiting = S.entry.share;
-      if (waiting && waiting.setBy !== S.user.id && S.share.role === 'none') notice('link-' + waiting.setAt, 'Your partner is sharing their project: open Partner to join it');
+      if (waiting && waiting.setBy !== S.user.id && S.share.role === 'none') notice('link-' + waiting.setAt, `${teammatesOf(S.entry).length > 1 ? 'Someone in your team' : 'Your partner'} is sharing their project: open Partner to join it`);
       if (S.entry.remainingMs <= 0) notice('over', 'Your contest time is used. You can still hand in');
     } catch (e) {
       console.error(e);
@@ -895,6 +910,7 @@
         saveRenders();
       }
       await sendRecord();
+      await openSnapshots();
     } catch (e) {
       say('hi-error', e.offline ? 'reluduali.com could not be reached.' : e.message);
     } finally {
@@ -902,6 +918,80 @@
       render();
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Sealed snapshots (0.3.0)
+  // ---------------------------------------------------------------------------
+  //
+  // At three moments reluduali.com picks and never says in advance, a check-in's answer asks for a snapshot: { n, nonce,
+  // answerBy }. The panel takes a summary of the contest project, makes a random number of its own (the salt), and seals:
+  //   seal = HMAC-SHA256(key = the server's nonce, data = salt + "\n" + canonical(summary))
+  // It sends only the seal, and keeps the summary and salt here, in its own storage. At hand-in it opens them, and
+  // reluduali.com checks each against its seal. The summary is Lumit's own (project.summary: clip counts, lengths and
+  // effect names, never a file name, folder or text), once Lumit gives one; until then it is a stand-in: the project's
+  // id, and the edit record's length and newest fingerprint. Nothing in either says what you are editing.
+
+  /** JSON with every object's keys in order and no spaces: the same bytes reluduali.com works out from the same summary. */
+  function canonical(v) {
+    if (v === null || typeof v === 'boolean' || typeof v === 'string') return JSON.stringify(v);
+    if (typeof v === 'number') { if (!Number.isFinite(v)) throw new Error('a number that is not finite'); return JSON.stringify(v); }
+    if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+    if (typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`;
+    throw new Error(`a ${typeof v} cannot be in a summary`);
+  }
+  const toHex = (bytes) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const fromHex = (hex) => new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16)));
+  async function hmacHex(keyHex, text) {
+    const key = await crypto.subtle.importKey('raw', fromHex(keyHex), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return toHex(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(text)));
+  }
+  const snapshotsOf = (contestId) => (contestId ? store.json(KEY.snapshots(contestId)) || [] : []);
+  const saveSnapshots = (contestId, list) => store.set(KEY.snapshots(contestId), JSON.stringify(list));
+
+  /** The summary sealed: Lumit's own when it has one to give, else the stand-in. */
+  async function summaryNow(w) {
+    let s = null;
+    try { s = await window.lumit.call('project.summary'); } catch {}
+    if (s && typeof s === 'object' && !Array.isArray(s)) return s;
+    const rec = S.record && S.record.windowId === w.id ? await S.record.state() : null;
+    return { standIn: true, id: (S.contestProject && S.contestProject.id) || null, steps: rec ? rec.steps : 0, last: rec ? rec.last : null };
+  }
+
+  /** Answers an ask: sealed once (the same seal if it is asked again), sent until reluduali.com has it. */
+  async function takeSnapshot(ask, w) {
+    const contestId = w.contestId;
+    if (!contestId || !Number.isInteger(ask.n) || !/^[0-9a-f]{64}$/.test(ask.nonce || '')) return;
+    const list = snapshotsOf(contestId);
+    let s = list.find((x) => x.n === ask.n);
+    if (!s) {
+      const summary = await summaryNow(w);
+      const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
+      s = { n: ask.n, salt, summary, seal: await hmacHex(ask.nonce, `${salt}\n${canonical(summary)}`), sent: false, at: Date.now() };
+      list.push(s);
+      saveSnapshots(contestId, list);
+    }
+    if (s.sent) return;
+    try {
+      await guarded(() => RelServer.snapshot(S.token, w.id, s.n, s.seal));
+      s.sent = true;
+    } catch (e) {
+      if (e.status === 409) s.sent = true;      // sealed already: an earlier send got there
+      else return;                              // not reached: asked again with the next check-in, and sent then
+    }
+    saveSnapshots(contestId, list);
+    S.witnessed.unshift({ at: Date.now(), snapshot: s.n });
+  }
+
+  /** At hand-in: every seal reluduali.com has, opened, so it can check each against what it says. */
+  async function openSnapshots() {
+    const list = snapshotsOf(S.contestId).filter((x) => x.sent);
+    if (!list.length) { S.snapshotCheck = null; return; }
+    try {
+      S.snapshotCheck = await guarded(() => RelServer.openSnapshots(S.token, S.contestId, list.map(({ n, salt, summary }) => ({ n, salt, summary }))));
+    } catch (e) {
+      S.snapshotCheck = { error: e.offline ? 'reluduali.com could not be reached' : e.message };
+    }
+  }
 
   /**
    * The edit record goes with every hand-in. A check-in goes first, so the
@@ -1020,6 +1110,16 @@
     return { dot: 'off', what: heard ? 'Linked, not recording' : 'Linked, not heard from', rate: '', r: 0 };
   }
 
+  /** One more person's line on the clock, as #oc-partner is drawn: for the third and fourth in a team. */
+  function personRow(label, s) {
+    const box = el('div', 'person');
+    const now = el('span', 'now');
+    const dot = el('span', 'dot ' + (s.dot || 'off'));
+    now.append(dot, el('span', 'what', s.what), el('span', 'rate mono', s.rate || ''));
+    box.append(el('span', 'lbl', label), now);
+    return box;
+  }
+
   function paintPerson(id, label, s) {
     const box = $(id);
     box.querySelector('.lbl').textContent = label;
@@ -1041,12 +1141,13 @@
     if (!timed && remaining <= 0) return 'your time is used. You can still hand in';
     const me = myState(now, false);
     const cs = consoleState(now);
-    const ps = partnerState(partnerOf(e), now);
+    const team = teammatesOf(e).map((m) => partnerState(m, now)).filter(Boolean);
+    const teamR = team.reduce((t, s) => t + (s.r || 0), 0);
     const who = [];
     if (me.r) who.push(me.state);   // editing, rendering
     if (cs && cs.r) who.push('recording');
-    if (ps && ps.r) who.push('your partner');
-    const r = (me.r || 0) + (cs ? cs.r : 0) + ((ps && ps.r) || 0);
+    if (teamR) who.push(team.length > 1 ? 'your team' : 'your partner');
+    const r = (me.r || 0) + (cs ? cs.r : 0) + teamR;
     const doing = r ? `${who.join(' + ')} at ${rate(r)}`
       : me.state === 'not-contest' ? (S.contestProject ? 'another project is open, not counting' : 'not counting yet')
       : me.first ? 'AS SOON AS YOU TOUCH, the timer starts'
@@ -1060,8 +1161,9 @@
     if (S.win) S.ledger.advance(now);
     const e = S.entry;
     const c = S.contest;
-    const partner = partnerOf(e);
-    $('oc-title').textContent = c ? `${c.name} · ${partner ? 'team' : 'on your own'}` : 'No contest chosen';
+    const mates = teammatesOf(e);
+    const partner = mates[0] || null;
+    $('oc-title').textContent = c ? `${c.name} · ${!mates.length ? 'on your own' : mates.length === 1 ? 'team' : `team of ${mates.length + 1}`}` : 'No contest chosen';
     // Two clocks. The contest's own, the same for everyone: plain time to its opening, then to its close.
     // And the weighted one, which is yours: the budget, spent at each kind of work's rate. In an ordinary
     // contest the weighted clock is the big one and the contest's is kept quiet beside it. In a timed
@@ -1088,7 +1190,7 @@
     $('clockcard').classList.toggle('over', over);
     $('clockcard').classList.toggle('offline', !!(S.win && S.offlineSince));
 
-    // The bar: where the budget went, both partners together.
+    // The bar: where the budget went, everyone in the team together.
     const spent = (e && e.spentBy) || {};
     const parts = { rec: 0, edit: 0, rend: 0, other: 0 };
     for (const [name, ms] of Object.entries(spent)) parts[colourOf(name)] += ms;
@@ -1098,22 +1200,30 @@
 
     const me = myState(now, over);
     paintPerson('oc-me', 'You', me);
-    const ps = partnerState(partner, now);
+    const team = mates.map((m) => ({ m, s: partnerState(m, now) }));
+    const ps = team.length ? team[0].s : null;
     $('oc-partner').hidden = !ps;
     if (ps) paintPerson('oc-partner', partner.username, ps);
+    // The rest of a team of three or four, under the first, the same way.
+    const more = clear($('oc-team-more'));
+    for (const { m, s } of team.slice(1)) more.append(personRow(m.username, s));
+    const teamR = team.reduce((t, x) => t + (x.s.r || 0), 0);
     const cs = consoleState(now);
     $('oc-console').hidden = !cs;
     if (cs) paintPerson('oc-console', 'Your Console', cs);
 
-    // What the budget is going down at now: your panel, your Console and your partner, all charged.
+    // What the budget is going down at now: your panel, your Console and everyone else in the team, all charged.
     const mine = (S.win ? me.r || 0 : 0) + (cs ? cs.r : 0);
     let line = '';
     if (over && timed) line = 'The contest is over.';
     else if (over) line = c && c.submitBy ? `You can still hand in until ${when(c.submitBy)}.` : 'You can still hand in.';
     else if (!S.win && opensIn > 0) line = `The contest opens in ${countdown(opensIn)}. Your window can be opened then.`;
-    else if (ps && (S.win || mine)) {
-      const together = mine + (ps.r || 0);
-      line = together ? `${mine && ps.r ? 'Both working' : 'One of you working'}: shared time runs at ${rate(together)}` : 'Both idle: nothing is charged';
+    else if (team.length && (S.win || mine)) {
+      const all = mine + teamR;
+      const n = 1 + team.length;
+      const working = (mine ? 1 : 0) + team.filter((x) => x.s.r).length;
+      const who = n === 2 ? (working === 2 ? 'Both working' : 'One of you working') : working === n ? 'All of you working' : working === 1 ? 'One of you working' : `${working} of you working`;
+      line = all ? `${who}: shared time runs at ${rate(all)}` : `${n === 2 ? 'Both' : 'All'} idle: nothing is charged`;
     } else if (cs && cs.r) line = `${me.r ? 'Lumit and the Console together' : 'The Console'}: your time runs at ${rate(mine)}`;
     else if (me.state === 'idle' && S.win) line = me.first ? '' : 'Paused. It starts again when you edit.';   // not "paused" before it has ever run
     else if (me.state === 'not-contest') line = S.contestProject ? 'Only the contest project counts. Nothing here is noted.'
@@ -1128,7 +1238,7 @@
     else w.textContent = '';
     const p = $('oc-project');
     if (S.win) {
-      if (S.share.role === 'guest') p.textContent = 'Counting: your partner\'s shared project';
+      if (S.share.role === 'guest') p.textContent = mates.length > 1 ? 'Counting: your team\'s shared project' : 'Counting: your partner\'s shared project';
       else if (S.contestProject) p.textContent = contestProjectOpen() ? `Counting: ${contestProjectName()}` : `Only ${contestProjectName()} counts. Another project is open.`;
       else if (S.project.id) p.textContent = 'The project you edit first is the contest\'s.';
       else p.textContent = 'Save your project once, so the timer knows which one is the contest\'s.';
@@ -1170,6 +1280,7 @@
       const li = el('li');
       li.append(el('span', 't', time(b.at)));
       if (b.refused) li.append(el('span', '', b.refused));
+      else if (b.snapshot) li.append(el('span', '', `snapshot ${b.snapshot} sealed`), el('span', 'mark-ok', '✓'));
       else if (b.gap) { li.append(el('span', '', `${clock(b.elapsedMs)} not reaching the server`), el('span', 'mark-gap', 'gap')); }
       else { li.append(el('span', '', `check-in ${b.seq} · ${b.doing.length ? b.doing.join(' · ') : 'idle'}`), el('span', 'mark-ok', '✓')); }
       list.append(li);
@@ -1195,7 +1306,7 @@
       const what = el('span', 'what');
       what.append(el('span', '', x.name), el('span', 'note', [x.submitBy ? `hand in by ${when(x.submitBy)}` : 'no deadline', `${x.entries} entered`].join(' · ')));
       const asked = S.invitations.find((i) => i.contestId === x.id);
-      if (asked) what.append(el('span', 'note ok', `${asked.from ? asked.from.username : 'A friend'} invited you to edit this one together`));
+      if (asked) what.append(el('span', 'note ok', `${askersOf(asked)} invited you to edit this one together`));
       // Choosing asks reluduali.com for your entry first. It says it is working, and a failure is
       // said beside the list (ct-error is inside the contest's details, hidden until one is chosen).
       const pick = button('Choose', 'btn', async () => {
@@ -1246,7 +1357,7 @@
     const body = clear($('ct-enter-body'));
     if (S.joined && S.joined.contestId === c.id) body.append(el('p', 'note ok', S.joined.words));
     const invitation = S.invitations.find((i) => i.contestId === c.id);
-    const who = invitation && invitation.from ? invitation.from.username : 'A friend';
+    const who = invitation ? askersOf(invitation) : 'A friend';
     if (!S.entry && invitation) {
       body.append(el('p', '', `${who} invited you to edit this contest together, on one shared budget.`));
       if (invitation.refusal) body.append(el('p', 'note', `It can't be accepted now: ${invitation.refusal}.`));
@@ -1273,7 +1384,7 @@
       };
       const opt = (b, t, d) => { const ring = el('span', 'ring'); const txt = el('span'); txt.append(el('span', 'opt-t', t), el('span', 'opt-d', d)); b.append(ring, txt); };
       opt(alone, 'On my own', `${span(c.budgetMinutes * 60000)}, yours alone`);
-      opt(withFriend, 'With a friend', S.friends.length ? 'One shared budget. They must accept.' : 'You have no Reluduali friends yet. Add them on the Partner page, or on reluduali.com.');
+      opt(withFriend, 'With a friend', S.friends.length ? 'One shared budget. They must accept. Ask more on the Partner page: a team is up to four.' : 'You have no Reluduali friends yet. Add them on the Partner page, or on reluduali.com.');
       alone.addEventListener('click', () => { mode = 'alone'; paint(); });
       withFriend.addEventListener('click', () => { if (S.friends.length) { mode = 'friend'; paint(); } });
       choice.append(alone, withFriend);
@@ -1284,9 +1395,9 @@
       body.append(choice, row);
       return;
     }
-    const partner = partnerOf(S.entry);
-    if (partner && !partner.accepted) {
-      body.append(el('p', '', `You entered with ${partner.username}. Waiting for them to accept; until then, you can still open your window.`));
+    const asked = teammatesOf(S.entry).filter((m) => !m.accepted);
+    if (asked.length) {
+      body.append(el('p', '', `You entered with ${namesOf(asked)}. Waiting for them to accept; until then, you can still open your window.`));
     }
     if (deadlinePassed()) { body.append(el('p', 'note', 'The deadline has passed. No new window can be opened.')); return; }
     if (notOpenYet()) { body.append(el('p', 'note', `The contest opens ${when(S.contest.opensAt)}. Your window can be opened then.`)); return; }
@@ -1335,37 +1446,48 @@
 
   function renderPartner() {
     const e = S.entry;
-    const p = partnerOf(e);
-    $('pt-initial').textContent = p ? p.username[0].toUpperCase() : '?';
-    $('pt-names').textContent = p ? `You and ${p.username}` : e ? 'Just you' : 'Not entered yet';
-    const canAsk = !!(e && !p && !deadlinePassed());
-    $('pt-note').textContent = !e ? 'Choose a partner when you enter, on the Contest page.'
-      : !p ? (canAsk ? 'You entered on your own. You can still ask a friend, below: if they say yes, you share one budget.' : 'You entered on your own.')
-      : p.accepted ? (p.seenAt ? 'accepted · their window is open' : 'accepted') : 'invited · waiting for them to accept';
+    const mates = teammatesOf(e);
+    const accepted = mates.filter((m) => m.accepted);
+    const asked = mates.filter((m) => !m.accepted);
+    const p = mates[0] || null;
+    $('pt-initial').textContent = !p ? '?' : mates.length > 1 ? `+${mates.length}` : p.username[0].toUpperCase();
+    $('pt-names').textContent = p ? inWords(['You', ...mates.map((m) => m.username)]) : e ? 'Just you' : 'Not entered yet';
+    // Up to four in a team, counting those asked who have not said yes yet: reluduali.com counts the same way.
+    const canAsk = !!(e && e.members.length < TEAM_MAX && !deadlinePassed());
+    const room = e ? TEAM_MAX - e.members.length : 0;
+    $('pt-note').textContent = !e ? 'Choose a partner when you enter, on the Contest page. After you enter, you can ask more here: a team is up to four.'
+      : !p ? (canAsk ? 'You entered on your own. You can still ask a friend, below, and up to three: each who says yes shares your one budget.' : 'You entered on your own.')
+      : mates.length === 1 && !canAsk ? (p.accepted ? (p.seenAt ? 'accepted · their window is open' : 'accepted') : 'invited · waiting for them to accept')
+      : mates.length === 1 ? `${p.accepted ? (p.seenAt ? 'accepted · their window is open' : 'accepted') : 'invited · waiting for them to accept'} · you can ask ${room === 1 ? 'one more friend' : `${room} more friends`}`
+      : [accepted.length ? `in your team: ${namesOf(accepted)}` : '', asked.length ? `asked, waiting for them to accept: ${namesOf(asked)}` : '',
+        canAsk ? `you can ask ${room === 1 ? 'one more friend' : `${room} more friends`}` : ''].filter(Boolean).join(' · ');
     const status = $('pt-share-status');
     const actions = clear($('pt-actions'));
-    status.textContent = '';
-    if (p && !p.accepted) {
-      status.textContent = `You asked ${p.username}. Until they say yes, you can take it back and ask someone else.`;
-      actions.append(button('Take back the invitation', 'btn', takeBack));
-    }
+    const lines = [];
+    if (asked.length === 1) lines.push(`You asked ${asked[0].username}. Until they say yes, you can take it back and ask someone else.`);
+    else if (asked.length) lines.push(`You asked ${namesOf(asked)}. Until each says yes, you can take their invitation back.`);
+    for (const w of asked) actions.append(button(asked.length === 1 ? 'Take back the invitation' : `Take back the invitation to ${w.username}`, 'btn', () => takeBack(w.username)));
     if (teamReady()) {
       const waiting = e.share && e.share.setBy !== S.user.id ? e.share : null;
+      const nameOf = (id) => (e.members.find((m) => m.id === id) || {}).username || namesOf(accepted);
       const people = (S.share.people || []).map((x) => x.name + (x.me ? ' (you)' : '')).join(', ');
       if (S.share.role === 'host') {
-        status.textContent = `You are hosting the shared project${people ? ': ' + people : ''}. Footage is matched on each PC; what is missing is sent as a stand-in, encrypted.`;
-        actions.append(button(S.linkSent ? 'Send the link again' : `Send the link to ${p.username}`, 'btn', sendLink), button('Stop sharing', 'btn', stopSharing));
+        lines.push(`You are hosting the shared project${people ? ': ' + people : ''}. Footage is matched on each PC; what is missing is sent as a stand-in, encrypted.`);
+        actions.append(button(S.linkSent ? 'Send the link again' : `Send the link to ${namesOf(accepted)}`, 'btn', sendLink), button('Stop sharing', 'btn', stopSharing));
       } else if (S.share.role === 'guest') {
-        status.textContent = `You are in ${p.username}'s shared project${S.share.away ? ', and their PC is out of reach: your edits wait and are merged when they are back' : ''}.`;
+        const host = e.share ? nameOf(e.share.setBy) : namesOf(accepted);
+        lines.push(`You are in ${host}'s shared project${S.share.away ? ', and their PC is out of reach: your edits wait and are merged when they are back' : ''}.`);
         actions.append(button('Leave', 'btn', stopSharing));
       } else if (waiting) {
-        status.textContent = `${p.username} is sharing their project with you (${ago(waiting.setAt)}).`;
-        actions.append(button(`Join ${p.username}'s project`, 'btn pri', joinPartner));
+        lines.push(`${nameOf(waiting.setBy)} is sharing their project with you (${ago(waiting.setAt)}).`);
+        actions.append(button(`Join ${nameOf(waiting.setBy)}'s project`, 'btn pri', joinPartner));
       } else {
-        status.textContent = 'One of you hosts the project; the other joins it. Whoever hosts keeps the saved project.';
+        lines.push(accepted.length === 1 ? 'One of you hosts the project; the other joins it. Whoever hosts keeps the saved project.'
+          : 'One of you hosts the project; the others join it. Whoever hosts keeps the saved project.');
         actions.append(button('Share this project', 'btn pri', shareProject));
       }
     }
+    status.textContent = lines.join(' ');
     const rates = clear($('pt-rates'));
     if (S.contest) {
       const { editing } = RelClock.lumitCategories(S.contest);
@@ -1374,16 +1496,20 @@
       const ed = editing ? editing.multiplier : 1;
       const rows = [['One of you editing', rate(ed)]];
       if (inGame) rows.push([inGame.console ? 'One editing, one in the game' : 'One editing, one recording', rate(ed + inGame.multiplier)]);
-      rows.push(['Both editing', rate(ed * 2)]);
+      // As many people as the team has (with those asked), each editing adding the rate again.
+      const size = Math.max(2, e ? e.members.length : 2);
+      if (size === 2) rows.push(['Both editing', rate(ed * 2)]);
+      else for (let k = 2; k <= size; k++) rows.push([k === size ? `All ${k} editing` : `${k} of you editing`, rate(ed * k)]);
       if (queued) rows.push(['A queued recording, on top of any of these', '+' + rate(queued.multiplier)]);
-      rows.push(['Both idle', 'free']);
+      rows.push([size === 2 ? 'Both idle' : 'All idle', 'free']);
       for (const [t, r] of rows) { const li = el('li'); li.append(el('span'), el('span', '', t), el('span', 'mono', r)); rates.append(li); }
     }
     const friends = clear($('pt-friends'));
     for (const f of S.friends) {
       const li = el('li');
       li.append(el('span', 'av', f.username[0].toUpperCase()), el('span', 'what', f.username));
-      if (p && p.id === f.id) li.append(el('span', 'sub ok', p.accepted ? 'partner' : 'invited'));
+      const mate = mates.find((m) => m.id === f.id);
+      if (mate) li.append(el('span', 'sub ok', !mate.accepted ? 'invited' : mates.length === 1 ? 'partner' : 'in your team'));
       else if (canAsk) li.append(button('Ask to edit together', 'btn', () => invite(f.username)));
       friends.append(li);
     }
@@ -1458,7 +1584,8 @@
   function renderHandIn() {
     const c = S.contest;
     const s = S.submission;
-    $('hi-sub').textContent = c && c.submitBy ? `${partnerOf(S.entry) ? 'Either of you' : 'You'} can update it until ${when(c.submitBy)}` : '';
+    const n = teammatesOf(S.entry).length;
+    $('hi-sub').textContent = c && c.submitBy ? `${!n ? 'You' : n === 1 ? 'Either of you' : 'Anyone in your team'} can update it until ${when(c.submitBy)}` : '';
     const handed = s ? S.renders.find((r) => r.sha256 && r.sha256 === s.hqSha256) : null;
     $('hi-latest').textContent = handed ? `Render ${handed.n} · ${when(s.updatedAt)}` : '';
     if (s && document.activeElement !== $('hi-yt') && !$('hi-yt').value) $('hi-yt').value = s.youtube;
@@ -1485,12 +1612,19 @@
       const f = rc ? rc.facts : kept;
       add(true, `Your edit record: ${f.steps.toLocaleString()} step${f.steps === 1 ? '' : 's'}, matching all ${f.stamps} fingerprint${f.stamps === 1 ? '' : 's'} the server stamped${f.unstamped ? ` (${f.unstamped} after the last check-in)` : ''}`);
     } else add(false, 'Your edit record goes with the hand-in: step names and times, checked against what the server stamped');
+    const sc = S.snapshotCheck;
+    if (sc && sc.error) add(false, `Your snapshots were not opened: ${sc.error}`);
+    else if (sc && sc.results) {
+      const matched = sc.results.filter((x) => x.verdict === 'match').length;
+      add(matched === sc.results.length, `Your snapshots: ${matched} of ${sc.results.length} opened and matching their seals`);
+    }
     add(false, 'At judging, the organizer checks the file at your link against its fingerprint');
   }
 
   function renderAccount() {
     $('ac-who').textContent = `Signed in as ${S.user.username}`;
-    $('ac-versions').textContent = `Reluduali panel ${VERSION}${S.info ? ` · Lumit ${S.info.lumit} · extension API ${S.info.api}` : ''}`;
+    const installed = S.info && S.info.extension && S.info.extension.version;   // what Lumit installed, from extension.json
+    $('ac-versions').textContent = `Reluduali panel ${installed || VERSION}${S.info ? ` · Lumit ${S.info.lumit} · extension API ${S.info.api}` : ''}`;
     const list = clear($('ac-sent'));
     for (const m of S.sent.slice(-80).reverse()) {
       const li = el('li');

@@ -71,7 +71,13 @@
     acceptInvitation: (token, contestId, entryId) => send('POST', `/api/contests/${id(contestId)}/join/${id(entryId)}`, {}, token),
     // Asking a friend to be your partner after you entered on your own, by name; and taking that back.
     invite: (token, contestId, partner) => send('POST', `/api/contests/${id(contestId)}/invite`, { partner }, token),
-    takeBackInvitation: (token, contestId) => send('DELETE', `/api/contests/${id(contestId)}/invite`, undefined, token),
+    // A snapshot asked for in a check-in's answer: only its seal goes now (0.3.0). At hand-in, the snapshots are opened:
+    // each one's summary (numbers and names of effects; never a file name, folder or text) and the panel's random number.
+    snapshot: (token, windowId, n, seal) => send('POST', `/api/timer/windows/${id(windowId)}/snapshot`, { n, seal }, token),
+    openSnapshots: (token, contestId, snapshots) => send('POST', `/api/contests/${id(contestId)}/snapshots`, { snapshots }, token),
+
+    // Taking back one invitation, to the friend named; the panel names them. (Without a name, every one still waiting.)
+    takeBackInvitation: (token, contestId, partner) => send('DELETE', `/api/contests/${id(contestId)}/invite`, partner ? { partner } : undefined, token),
 
     // Your friends, and friend requests: a request to the name you type, and saying yes to one sent to you.
     friends: (token) => send('GET', '/api/friends', undefined, token),
